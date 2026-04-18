@@ -110,18 +110,42 @@ call will prompt you to enter the password securely.
 
 ```powershell
 # Install modules if not already present
-Install-Module Microsoft.PowerShell.SecretManagement,
-              Microsoft.PowerShell.SecretStore -Force -Scope AllUsers
+if (-not (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement)) {
+    Install-Module Microsoft.PowerShell.SecretManagement,
+                  Microsoft.PowerShell.SecretStore -Force -Scope AllUsers
+}
 
-# Register the vault (you will be prompted to set a vault master password)
-Register-SecretVault -Name SqlLabVault -ModuleName Microsoft.PowerShell.SecretStore
+# Remove existing vault if present
+if (Get-SecretVault -Name SqlLabVault -ErrorAction SilentlyContinue) {
+    Write-Host "Vault 'SqlLabVault' already exists — removing it..."
+    Unregister-SecretVault -Name SqlLabVault
+    # Also wipe the underlying store so stale secrets don't linger
+    Reset-SecretStore -Force
+    Write-Host "Vault removed."
+}
 
-# Seed required secrets
-Set-Secret -Name LocalAdminPass  -Vault SqlLabVault   # local Administrator on each VM
-Set-Secret -Name DomainAdminPass -Vault SqlLabVault   # SQLLAB\Administrator after promotion
-Set-Secret -Name DSSafeModePass  -Vault SqlLabVault   # AD DS Directory Services Restore Mode
-Set-Secret -Name SqlSvcPass      -Vault SqlLabVault   # SQLLAB\svc-sql service account
-Set-Secret -Name SaPassword      -Vault SqlLabVault   # SQL Server sa login
+# Register a fresh vault
+Register-SecretVault -Name SqlLabVault -ModuleName Microsoft.PowerShell.SecretStore -DefaultVault
+Write-Host "Vault 'SqlLabVault' registered. You will be prompted to set a master password."
+
+# Seed required secrets — each prompt shows the secret name
+$secrets = [ordered]@{
+    LocalAdminPass  = "Local Administrator password on each VM"
+    DomainAdminPass = "SQLLAB\Administrator (after domain promotion)"
+    DSSafeModePass  = "Active Directory DSRM password"
+    SqlSvcPass      = "SQLLAB\svc-sql service account password"
+    SaPassword      = "SQL Server 'sa' login password"
+}
+
+foreach ($name in $secrets.Keys) {
+    Write-Host "`nSecret : $name"
+    Write-Host "Usage  : $($secrets[$name])"
+    $value = Read-Host -Prompt "Enter value for '$name'" -AsSecureString
+    Set-Secret -Name $name -Secret $value -Vault SqlLabVault
+    Write-Host "Stored : $name"
+}
+
+Write-Host "`nAll secrets stored in SqlLabVault. Run 'Unlock-SecretVault -Name SqlLabVault' at the start of each new session."
 ```
 
 > **Note:** The vault master password is required each PowerShell session.
