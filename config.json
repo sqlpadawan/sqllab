@@ -1,0 +1,18 @@
+{
+  "DomainFQDN":        "sqllab.local",
+  "DomainNetBIOS":     "SQLLAB",
+  "GoldVhdxPath":      "C:\\HyperV\\BaseImages\\WS2022-Gold.vhdx",
+  "Win11VhdxPath":     "C:\\HyperV\\BaseImages\\Win11-Gold.vhdx",
+  "VMStoragePath":     "C:\\HyperV\\VMs",
+  "DiffDiskPath":      "C:\\HyperV\\Disks",
+  "vSwitchInternal":   "sqllab-internal",
+  "vSwitchExternal":   "sqllab-external",
+  "DCExternalNIC":     "Ethernet 0",
+  "DCInternalNIC":     "Ethernet 1",
+  "DefaultVCPU":       2,
+  "DefaultMemoryGB":   4,
+  "SQLMemoryGB":       6,
+  "TimeZone":          "Eastern Standard Time",
+  "AdminUser":         "labadmin",
+  "SecretsVault":      "SqlLabVault"
+}
