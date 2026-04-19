@@ -179,7 +179,7 @@ Never boot or modify the gold images directly.
 ```powershell
 # Windows Server 2022 gold image
 .\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\ISOs\WindowsServer2022.iso" `
+    -ISOPath    "C:\Users\sqlpa\OneDrive\ISO Files\en-us_windows_server_2022_updated_jan_2024_x64_dvd_2b7a0c9f.iso" `
     -OutputVhdx "C:\HyperV\BaseImages\WS2022-Gold.vhdx"
 
 # Windows 11 gold image
