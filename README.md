@@ -184,7 +184,7 @@ Never boot or modify the gold images directly.
 
 # Windows 11 gold image
 .\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\ISOs\Windows11.iso" `
+    -ISOPath    "C:\Users\sqlpa\OneDrive\ISO Files\en-us_windows_11_business_editions_version_23h2_updated_jan_2024_x64_dvd_12855bc9.iso" `
     -OutputVhdx "C:\HyperV\BaseImages\Win11-Gold.vhdx" `
     -Win11
 ```
