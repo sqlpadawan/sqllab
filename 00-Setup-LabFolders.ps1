@@ -1,7 +1,15 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath = ".\config.json"
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "config.json")
 )
+
+# Change to the project directory so all relative paths resolve correctly
+Set-Location $PSScriptRoot
+Write-Host "Working directory: $PSScriptRoot"
+
+if (-not (Test-Path $ConfigPath)) {
+    throw "config.json not found at '$ConfigPath'. Verify the file exists in the project root."
+}
 
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 
