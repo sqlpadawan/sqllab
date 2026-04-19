@@ -126,6 +126,24 @@ foreach ($vm in $roles) {
     }
 }
 
+# Remove lab virtual switches
+Write-Host "`nRemoving virtual switches..." -ForegroundColor Cyan
+foreach ($switchName in @($config.vSwitchInternal, $config.vSwitchExternal)) {
+    $vmSwitch = Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue
+    if ($vmSwitch) {
+        if ($PSCmdlet.ShouldProcess($switchName, "Remove-VMSwitch")) {
+            try {
+                Remove-VMSwitch -Name $switchName -Force -ErrorAction Stop
+                Write-Host "Removed vSwitch: $switchName"
+            } catch {
+                $errors.Add("Failed to remove vSwitch $switchName : $_")
+            }
+        }
+    } else {
+        Write-Host "Not found, skipping: $switchName"
+    }
+}
+
 # Optionally remove gold images
 if ($IncludeGoldImages) {
     foreach ($vhdx in @($config.GoldVhdxPath, $config.Win11VhdxPath)) {

@@ -1,13 +1,20 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$ConfigPath  = ".\config.json",
-    [string]$RolesPath   = ".\roles.json",
-    [string]$SQLISOPath  = "C:\ISOs\SQLServer2022.iso",
-    [string]$WS2022ISO   = "C:\ISOs\WindowsServer2022.iso",
-    [string]$Win11ISO    = "C:\ISOs\Windows11.iso",
-    [switch]$SkipBaseImage,
-    [switch]$WhatIf
+    [string]$ConfigPath,
+    [string]$RolesPath,
+    [string]$SQLISOPath,
+    [string]$WS2022ISO,
+    [string]$Win11ISO,
+    [switch]$SkipBaseImage
 )
+
+# Change to the project directory so all relative paths resolve correctly
+Set-Location $PSScriptRoot
+Write-Host "Working directory: $PSScriptRoot"
+
+# Resolve config paths after $PSScriptRoot is available
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot "config.json" }
+if (-not $RolesPath)  { $RolesPath  = Join-Path $PSScriptRoot "roles.json"  }
 
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 $roles  = Get-Content $RolesPath  | ConvertFrom-Json

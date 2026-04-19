@@ -1,9 +1,13 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][PSCustomObject]$VMDef,
     [Parameter(Mandatory)][PSCustomObject]$Config,
     [Parameter(Mandatory)][string]$SQLISOPath
 )
+if ($WhatIfPreference) {
+    Write-Host "[$($VMDef.Name)] WhatIf: would run $(Split-Path $PSCommandPath -Leaf)"
+    return
+}
 
 $domainCred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",

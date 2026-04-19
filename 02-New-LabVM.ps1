@@ -109,13 +109,15 @@ $unattendXml = @"
 </unattend>
 "@
 
-$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
-    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
-$driveLetter = $mountedVhd.DriveLetter
-$unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
-New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
-$unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
-Dismount-VHD $diffVhdx
+if ($PSCmdlet.ShouldProcess($diffVhdx, "Inject unattend.xml")) {
+    $mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
+        Where-Object { $_.Type -eq 'Basic' } | Get-Volume
+    $driveLetter = $mountedVhd.DriveLetter
+    $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
+    New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
+    $unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
+    Dismount-VHD $diffVhdx
+}
 
 Write-Host "[$($VMDef.Name)] Creating VM..."
 if ($PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) {

@@ -1,8 +1,13 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][PSCustomObject]$VMDef,
     [Parameter(Mandatory)][PSCustomObject]$Config
 )
+
+if ($WhatIfPreference) {
+    Write-Host "[$($VMDef.Name)] WhatIf: would run $(Split-Path $PSCommandPath -Leaf)"
+    return
+}
 
 $safeModePw = Get-Secret -Name 'DSSafeModePass' -Vault $Config.SecretsVault
 $cred       = New-Object PSCredential("Administrator",

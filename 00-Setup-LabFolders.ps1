@@ -7,6 +7,11 @@ param(
 Set-Location $PSScriptRoot
 Write-Host "Working directory: $PSScriptRoot"
 
+# Resolve config path after $PSScriptRoot is available
+if (-not $ConfigPath) {
+    $ConfigPath = Join-Path $PSScriptRoot "config.json"
+}
+
 if (-not (Test-Path $ConfigPath)) {
     throw "config.json not found at '$ConfigPath'. Verify the file exists in the project root."
 }
