@@ -3,9 +3,14 @@ param(
     [Parameter(Mandatory)][string]$ISOPath,
     [Parameter(Mandatory)][string]$OutputVhdx,
     [int]   $SizeGB    = 60,
-    [string]$Edition   = "Windows Server 2022 Standard (Desktop Experience)",
+    [string]$Edition,
     [switch]$Win11
 )
+
+# Default edition name based on OS type if not explicitly provided
+if (-not $Edition) {
+    $Edition = if ($Win11) { "Windows 11 Pro" } else { "Windows Server 2022 Standard (Desktop Experience)" }
+}
 
 if (Test-Path $OutputVhdx) {
     Write-Warning "Gold VHDX already exists at $OutputVhdx. Delete it first to rebuild."
