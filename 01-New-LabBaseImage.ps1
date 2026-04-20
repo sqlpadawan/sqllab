@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$ISOPath,
     [Parameter(Mandatory)][string]$OutputVhdx,
     [int]   $SizeGB  = 64,
-    [string]$Edition = "Windows Server 2025 Standard (Desktop Experience)"
+    [string]$Edition = "Windows Server 2025 Datacenter Evaluation (Desktop Experience)"
 )
 
 if (Test-Path $OutputVhdx) {

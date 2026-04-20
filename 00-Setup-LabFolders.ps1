@@ -20,7 +20,6 @@ $config = Get-Content $ConfigPath | ConvertFrom-Json
 
 $folders = @(
     (Split-Path $config.GoldVhdxPath),
-    (Split-Path $config.Win11VhdxPath),
     $config.VMStoragePath,
     $config.DiffDiskPath
 ) | Select-Object -Unique

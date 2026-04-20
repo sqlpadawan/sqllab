@@ -52,8 +52,8 @@ internet access. RRAS on the DC provides NAT and routing for all lab VMs.
 Place your ISO files here before running the scripts:
 
 ```
-C:\ISOs\WindowsServer2025.iso
-C:\ISOs\SQLServer2025.iso
+C:\HyperV\ISO\WindowsServer2025.iso
+C:\HyperV\ISO\SQLServer2025.iso
 ```
 
 ### Disk space
@@ -175,7 +175,7 @@ Never boot or modify the gold images directly.
 ```powershell
 # Windows Server 2025 gold image — used by all VMs
 .\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\ISOs\WindowsServer2025.iso" `
+    -ISOPath    "C:\HyperV\ISO\WindowsServer2025.iso" `
     -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
 ```
 
@@ -189,8 +189,8 @@ Once the gold images exist, run the orchestrator to build the entire lab:
 
 ```powershell
 .\Deploy-Lab.ps1 `
-    -SQLISOPath "C:\ISOs\SQLServer2025.iso" `
-    -WS2025ISO  "C:\ISOs\WindowsServer2025.iso"
+    -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso" `
+    -WS2025ISO  "C:\HyperV\ISO\WindowsServer2025.iso"
 ```
 
 The orchestrator runs six stages in order:
@@ -215,7 +215,7 @@ Total deployment time is approximately 60–90 minutes.
 #### Skip rebuilding gold images (faster redeployment)
 
 ```powershell
-.\Deploy-Lab.ps1 -SkipBaseImage -SQLISOPath "C:\ISOs\SQLServer2025.iso"
+.\Deploy-Lab.ps1 -SkipBaseImage -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso"
 ```
 
 ---
