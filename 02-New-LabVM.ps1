@@ -29,15 +29,13 @@ if ($PSCmdlet.ShouldProcess($diffVhdx, "Create differencing VHDX")) {
         Write-Error "[$($VMDef.Name)] New-VHD failed: $_"
         return
     }
-
     Resize-VHD -Path $diffVhdx -SizeBytes ($diskSizeGB * 1GB)
     Write-Host "[$($VMDef.Name)] Disk resized to $diskSizeGB GB."
 }
 
-# Create the VM now (before injecting unattend.xml) so we can read the MAC
-# address that Hyper-V assigns to the internal NIC. We use that MAC in the
-# specialize-pass netsh script to find the right adapter regardless of how
-# Windows names it (Ethernet, Ethernet 2, etc.).
+# Create the VM before building unattend.xml so we can read the MAC address
+# Hyper-V assigns to the internal NIC. We use it in the first-boot script to
+# find the right adapter regardless of how Windows names it.
 Write-Host "[$($VMDef.Name)] Creating VM..."
 if (-not $PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) { return }
 
@@ -60,43 +58,87 @@ Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
 
 Set-VMFirmware -VM $vm -EnableSecureBoot Off
 
-# The DC needs a second NIC on the external switch for internet/NAT.
-# Add it before reading MACs so both adapters are present when we snapshot them.
+# DC needs a second NIC on the external switch for NAT/internet.
+# Add it before reading MACs so both adapters are present.
 if ($VMDef.NICs -eq 2) {
     Add-VMNetworkAdapter -VM $vm -SwitchName $Config.vSwitchExternal
     Write-Host "[$($VMDef.Name)] Added external NIC."
 }
 
-# Read the MAC address of the internal NIC (always the first adapter).
-# Hyper-V formats it as "AABBCCDDEEFF" - netsh expects "AA-BB-CC-DD-EE-FF".
-$internalMac = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress -replace '(..)', '$1-' -replace '-$', ''
-Write-Host "[$($VMDef.Name)] Internal NIC MAC: $internalMac"
+# Read the MAC Hyper-V assigned to the internal NIC (always index 0).
+# Format: Hyper-V gives "AABBCCDDEEFF", PowerShell Get-NetAdapter uses "AA-BB-CC-DD-EE-FF".
+$rawMac      = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress
+$formattedMac = $rawMac -replace '(..(?!$))', '$1-'
+Write-Host "[$($VMDef.Name)] Internal NIC MAC: $formattedMac"
 
-# Build the gateway line conditionally - the DC has no gateway.
+# Build the IP configuration script that will run on first boot.
+# It finds the NIC by MAC address so adapter naming doesn't matter.
+$gateway    = if ($VMDef.Gateway) { $VMDef.Gateway } else { '' }
 $gatewayCmd = if ($VMDef.Gateway) {
-    "netsh interface ipv4 add route 0.0.0.0/0 name=`"%NIC%`" nexthop=$($VMDef.Gateway) store=persistent"
-} else { "" }
+    "netsh interface ipv4 add route 0.0.0.0/0 name=`$nicName nexthop=$($VMDef.Gateway) store=persistent"
+} else { '' }
 
-# This PowerShell script runs inside the VM during the specialize pass.
-# It finds the NIC by MAC address and applies the static IP, gateway, and DNS.
-# Using RunSynchronousCommand avoids the Identifier-matching bug in the
-# Microsoft-Windows-TCPIP component, which silently fails on Server 2025 when
-# the adapter name doesn't match "Local Area Connection".
-$netConfigScript = @"
-`$mac = '$internalMac'
-`$nic = Get-NetAdapter | Where-Object { `$_.MacAddress -eq `$mac }
+$netScript = @"
+`$mac    = '$formattedMac'
+`$nic    = Get-NetAdapter | Where-Object { `$_.MacAddress -eq `$mac } | Select-Object -First 1
 if (-not `$nic) { exit 1 }
-`$name = `$nic.Name
-netsh interface ipv4 set address name="`$name" static $($VMDef.IP) 255.255.255.0 $(if ($VMDef.Gateway) { $VMDef.Gateway } else { '' })
-netsh interface ipv4 set dns name="`$name" static $($VMDef.DNS) primary
-$(if ($VMDef.Gateway) { "netsh interface ipv4 add route 0.0.0.0/0 name=`"`$name`" nexthop=$($VMDef.Gateway) store=persistent" })
+`$nicName = `$nic.Name
+netsh interface ipv4 set address name="`$nicName" static $($VMDef.IP) 255.255.255.0 $gateway
+netsh interface ipv4 set dns    name="`$nicName" static $($VMDef.DNS) primary
+$gatewayCmd
+# Remove this scheduled task after it has run once
+Unregister-ScheduledTask -TaskName 'LabNetConfig' -Confirm:`$false
 "@
 
-# Encode the script as Base64 so it survives the XML embedding cleanly.
-$scriptBytes   = [System.Text.Encoding]::Unicode.GetBytes($netConfigScript)
-$encodedScript = [Convert]::ToBase64String($scriptBytes)
+$netScriptBytes   = [System.Text.Encoding]::Unicode.GetBytes($netScript)
+$netScriptEncoded = [Convert]::ToBase64String($netScriptBytes)
 
-Write-Host "[$($VMDef.Name)] Injecting unattend.xml..."
+# This scheduled task XML runs the IP config script at system startup,
+# before any user logs on, with SYSTEM privileges.
+# Trigger: AtStartup with a 30-second delay to ensure NICs are ready.
+# The script unregisters the task after it runs so it only fires once.
+$taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <BootTrigger>
+      <Delay>PT30S</Delay>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NonInteractive -WindowStyle Hidden -EncodedCommand $netScriptEncoded</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+
+$localAdminPass = Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault -AsPlainText
+
+Write-Host "[$($VMDef.Name)] Injecting unattend.xml and first-boot network task..."
+
+$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
+    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
+$driveLetter = $mountedVhd.DriveLetter
+
+# Inject the unattend.xml - kept minimal: hostname, timezone, and password only.
+# Networking is handled entirely by the scheduled task above to avoid the
+# unreliable Identifier-based TCPIP component in Windows Server 2025.
 $unattendXml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -108,13 +150,6 @@ $unattendXml = @"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <ComputerName>$($VMDef.Name)</ComputerName>
       <TimeZone>$($Config.TimeZone)</TimeZone>
-      <RunSynchronous>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <Description>Configure static IP via MAC address</Description>
-          <Path>powershell.exe -NonInteractive -EncodedCommand $encodedScript</Path>
-        </RunSynchronousCommand>
-      </RunSynchronous>
     </component>
   </settings>
   <settings pass="oobeSystem">
@@ -128,7 +163,7 @@ $unattendXml = @"
         <LogonCount>3</LogonCount>
         <Username>Administrator</Username>
         <Password>
-          <Value>$(Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault -AsPlainText)</Value>
+          <Value>$localAdminPass</Value>
           <PlainText>true</PlainText>
         </Password>
       </AutoLogon>
@@ -143,7 +178,7 @@ $unattendXml = @"
       </OOBE>
       <UserAccounts>
         <AdministratorPassword>
-          <Value>$(Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault -AsPlainText)</Value>
+          <Value>$localAdminPass</Value>
           <PlainText>true</PlainText>
         </AdministratorPassword>
       </UserAccounts>
@@ -152,19 +187,24 @@ $unattendXml = @"
 </unattend>
 "@
 
-# Mount the VHDX and inject unattend.xml before first boot.
-$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
-    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
-$driveLetter  = $mountedVhd.DriveLetter
 $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
 New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
 $unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
+
+# Drop the scheduled task XML into the offline VHDX so it is registered
+# before the OS ever boots. Task Scheduler picks up XML files placed in
+# %SystemRoot%\System32\Tasks automatically on first boot.
+$taskDir  = "${driveLetter}:\Windows\System32\Tasks"
+New-Item -Path $taskDir -ItemType Directory -Force | Out-Null
+$taskXml | Out-File -FilePath "$taskDir\LabNetConfig" -Encoding unicode
+
 Dismount-VHD $diffVhdx
 
 Start-VM -VM $vm
 Write-Host "[$($VMDef.Name)] VM started. Waiting for WinRM on $($VMDef.IP)..."
 
-$deadline = (Get-Date).AddMinutes(15)
+# Allow extra time for first boot (sysprep + scheduled task 30s delay)
+$deadline = (Get-Date).AddMinutes(20)
 while ((Get-Date) -lt $deadline) {
     if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
         Write-Host "[$($VMDef.Name)] WinRM is up."
