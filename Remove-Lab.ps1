@@ -199,4 +199,4 @@ if ($errors.Count -gt 0) {
 }
 
 Write-Host "`nTo redeploy the lab:"
-Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\ISOs\SQLServer2025.iso' ..."
+Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\HyperV\ISO\SQLServer2025.iso' ..."

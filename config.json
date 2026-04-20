@@ -10,7 +10,7 @@
   "DCInternalNIC":     "Ethernet 1",
   "DefaultVCPU":       2,
   "DefaultMemoryGB":   4,
-  "SQLMemoryGB":       6,
+  "SQLMemoryGB":       4,
   "TimeZone":          "Eastern Standard Time",
   "AdminUser":         "labadmin",
   "SecretsVault":      "SqlLabVault"

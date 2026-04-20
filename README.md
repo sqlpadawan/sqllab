@@ -274,7 +274,7 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 ```powershell
 $config = Get-Content .\config.json | ConvertFrom-Json
 $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlsrv02'
-.\06-Install-SQL.ps1 -VMDef $vm -Config $config -SQLISOPath "C:\ISOs\SQLServer2025.iso"
+.\06-Install-SQL.ps1 -VMDef $vm -Config $config -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso"
 ```
 
 ---
