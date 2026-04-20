@@ -14,7 +14,7 @@ if (Get-VM -Name $VMDef.Name -ErrorAction SilentlyContinue) {
     return
 }
 
-# Abort if an orphaned differencing disk already exists — do not overwrite it.
+# Abort if an orphaned differencing disk already exists - do not overwrite it.
 # Run Remove-Lab.ps1 or manually delete the file before retrying.
 if (Test-Path $diffVhdx) {
     Write-Error "[$($VMDef.Name)] Orphaned differencing disk found: $diffVhdx`nDelete it before retrying: Remove-Item '$diffVhdx' -Force"
@@ -68,11 +68,11 @@ if ($VMDef.NICs -eq 2) {
 }
 
 # Read the MAC address of the internal NIC (always the first adapter).
-# Hyper-V formats it as "AABBCCDDEEFF" — netsh expects "AA-BB-CC-DD-EE-FF".
+# Hyper-V formats it as "AABBCCDDEEFF" - netsh expects "AA-BB-CC-DD-EE-FF".
 $internalMac = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress -replace '(..)', '$1-' -replace '-$', ''
 Write-Host "[$($VMDef.Name)] Internal NIC MAC: $internalMac"
 
-# Build the gateway line conditionally — the DC has no gateway.
+# Build the gateway line conditionally - the DC has no gateway.
 $gatewayCmd = if ($VMDef.Gateway) {
     "netsh interface ipv4 add route 0.0.0.0/0 name=`"%NIC%`" nexthop=$($VMDef.Gateway) store=persistent"
 } else { "" }

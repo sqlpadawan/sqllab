@@ -54,7 +54,7 @@ The defaults point to:
 
 ```
 C:\HyperV\ISO\WindowsServer2025.iso
-C:\HyperV\ISO\SQLServer2025.iso
+C:\HyperV\ISO\SQL2025DeveloperEnterprise.iso
 ```
 
 Place your ISO files at those paths, or edit the two keys in `config.json` to point
@@ -210,7 +210,7 @@ override either path on the command line:
 
 ```powershell
 .\Deploy-Lab.ps1 `
-    -SQLISOPath "D:\ISOs\SQLServer2025.iso" `
+    -SQLISOPath "D:\ISOs\SQL2025DeveloperEnterprise.iso" `
     -WS2025ISO  "D:\ISOs\WindowsServer2025.iso"
 ```
 
@@ -380,7 +380,7 @@ after the move.
 | VMStoragePath | C:\HyperV\VMs | VM configuration files |
 | DiffDiskPath | C:\HyperV\Disks | Differencing VHDX files |
 | WS2025ISOPath | C:\HyperV\ISO\WindowsServer2025.iso | Windows Server 2025 ISO used to build the gold image |
-| SQLISOPath | C:\HyperV\ISO\SQLServer2025.iso | SQL Server ISO used by Deploy-Lab.ps1 and 06-Install-SQL.ps1 |
+| SQLISOPath | C:\HyperV\ISO\SQL2025DeveloperEnterprise.iso | SQL Server ISO used by Deploy-Lab.ps1 and 06-Install-SQL.ps1 |
 | vSwitchInternal | sqllab-internal | Internal lab switch |
 | vSwitchExternal | sqllab-external | External (internet) switch |
 | HostInternalIP | 172.16.10.1 | Static IP assigned to the host vNIC on the internal switch — required for PSRemoting to reach lab VMs |

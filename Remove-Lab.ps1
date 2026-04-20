@@ -155,17 +155,37 @@ foreach ($vhdx in (Get-ChildItem $config.DiffDiskPath -Filter "*.vhdx" -ErrorAct
 Write-Host "`nRemoving virtual switches..." -ForegroundColor Cyan
 foreach ($switchName in @($config.vSwitchInternal, $config.vSwitchExternal)) {
     $vmSwitch = Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue
-    if ($vmSwitch) {
-        if ($PSCmdlet.ShouldProcess($switchName, "Remove-VMSwitch")) {
-            try {
-                Remove-VMSwitch -Name $switchName -Force -ErrorAction Stop
-                Write-Host "Removed vSwitch: $switchName"
-            } catch {
-                $errors.Add("Failed to remove vSwitch $switchName : $_")
+    if (-not $vmSwitch) {
+        Write-Host "Not found, skipping: $switchName"
+        continue
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($switchName, "Remove-VMSwitch")) { continue }
+
+    # The external switch binds to a physical NIC. If the NIC binding is still
+    # active, Remove-VMSwitch can fail with 0x80070057 or 0x80071A2D.
+    # Retry up to 3 times with a short wait before giving up.
+    $removed  = $false
+    $attempts = 3
+    for ($i = 1; $i -le $attempts; $i++) {
+        try {
+            Remove-VMSwitch -Name $switchName -Force -ErrorAction Stop
+            Write-Host "Removed vSwitch: $switchName"
+            $removed = $true
+            break
+        } catch {
+            if ($i -lt $attempts) {
+                Write-Host "[$switchName] Remove attempt $i failed - retrying in 5s..."
+                Start-Sleep -Seconds 5
+            } else {
+                $msg = "Failed to remove vSwitch '$switchName' after $attempts attempts. " +
+                       "This is usually a stuck physical NIC binding. " +
+                       "Reboot the Hyper-V host and re-run Remove-Lab.ps1, or remove manually: " +
+                       "Remove-VMSwitch -Name '$switchName' -Force"
+                Write-Warning $msg
+                $errors.Add($msg)
             }
         }
-    } else {
-        Write-Host "Not found, skipping: $switchName"
     }
 }
 
@@ -199,4 +219,4 @@ if ($errors.Count -gt 0) {
 }
 
 Write-Host "`nTo redeploy the lab:"
-Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\HyperV\ISO\SQLServer2025.iso' ..."
+Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\HyperV\ISO\SQL2025DeveloperEnterprise.iso' ..."

@@ -5,7 +5,7 @@
   "VMStoragePath":     "C:\\HyperV\\VMs",
   "DiffDiskPath":      "C:\\HyperV\\Disks",
   "WS2025ISOPath":     "C:\\HyperV\\ISO\\WindowsServer2025.iso",
-  "SQLISOPath":        "C:\\HyperV\\ISO\\SQLServer2025.iso",
+  "SQLISOPath":        "C:\\HyperV\\ISO\\SQL2025DeveloperEnterprise.iso",
   "vSwitchInternal":   "sqllab-internal",
   "vSwitchExternal":   "sqllab-external",
   "HostInternalIP":    "172.16.10.1",
