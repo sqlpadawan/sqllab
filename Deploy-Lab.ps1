@@ -3,7 +3,7 @@ param(
     [string]$ConfigPath,
     [string]$RolesPath,
     [string]$SQLISOPath,
-    [string]$WS2022ISO,
+    [string]$WS2025ISO,
     [string]$Win11ISO,
     [switch]$SkipBaseImage
 )
@@ -38,7 +38,7 @@ foreach ($s in $requiredSecrets) {
 if (-not $SkipBaseImage) {
     Write-Host "`n[1/6] Building gold VHDX images..." -ForegroundColor Cyan
     if (-not (Test-Path $config.GoldVhdxPath)) {
-        .\01-New-LabBaseImage.ps1 -ISOPath $WS2022ISO -OutputVhdx $config.GoldVhdxPath
+        .\01-New-LabBaseImage.ps1 -ISOPath $WS2025ISO -OutputVhdx $config.GoldVhdxPath
     }
     if (-not (Test-Path $config.Win11VhdxPath)) {
         .\01-New-LabBaseImage.ps1 -ISOPath $Win11ISO -OutputVhdx $config.Win11VhdxPath -Win11
