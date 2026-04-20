@@ -1,6 +1,6 @@
 # sqllab.local — Hyper-V Lab Build Instructions
 
-A repeatable, scripted Windows domain lab with a domain controller, Windows 11
+A repeatable, scripted Windows domain lab with a domain controller, Windows Server 2025
 workstation, and four SQL Server instances spread across two simulated data centers.
 
 ---
@@ -9,12 +9,12 @@ workstation, and four SQL Server instances spread across two simulated data cent
 
 | Hostname | Role | OS | IP | Site |
 |---|---|---|---|---|
-| sqllabdc01 | Domain controller / DNS / RRAS | Windows Server 2022 | 172.16.10.10 | DC-A |
-| sqlwork01 | Workstation | Windows 11 | 172.16.10.20 | DC-A |
-| sqlsrv01 | SQL Server (default instance) | Windows Server 2022 | 172.16.10.101 | DC-A |
-| sqlsrv02 | SQL Server (default instance) | Windows Server 2022 | 172.16.10.102 | DC-A |
-| sqlsrv03 | SQL Server (default instance) | Windows Server 2022 | 192.168.10.101 | DC-B |
-| sqlsrv04 | SQL Server (default instance) | Windows Server 2022 | 192.168.10.102 | DC-B |
+| sqllabdc01 | Domain controller / DNS / RRAS | Windows Server 2025 | 172.16.10.10 | DC-A |
+| sqlwork01 | Workstation | Windows Server 2025 | 172.16.10.20 | DC-A |
+| sqlsrv01 | SQL Server (default instance) | Windows Server 2025 | 172.16.10.101 | DC-A |
+| sqlsrv02 | SQL Server (default instance) | Windows Server 2025 | 172.16.10.102 | DC-A |
+| sqlsrv03 | SQL Server (default instance) | Windows Server 2025 | 192.168.10.101 | DC-B |
+| sqlsrv04 | SQL Server (default instance) | Windows Server 2025 | 192.168.10.102 | DC-B |
 
 ### Network design
 
@@ -44,29 +44,25 @@ internet access. RRAS on the DC provides NAT and routing for all lab VMs.
 - Hyper-V role enabled (the setup script can enable it for you)
 - PowerShell 5.1 or later (run as Administrator)
 - ISO files:
-  - Windows Server 2022 evaluation: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2022
-  - Windows 11 evaluation: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise
-  - SQL Server 2022 evaluation: https://www.microsoft.com/en-us/evalcenter/evaluate-sql-server-2022
+  - Windows Server 2025 evaluation: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2025
+  - SQL Server 2025 evaluation: https://www.microsoft.com/en-us/evalcenter/evaluate-sql-server-2025
 
 ### ISO placement
 
 Place your ISO files here before running the scripts:
 
 ```
-C:\ISOs\WindowsServer2022.iso
-C:\ISOs\Windows11.iso
-C:\ISOs\SQLServer2022.iso
+C:\ISOs\WindowsServer2025.iso
+C:\ISOs\SQLServer2025.iso
 ```
 
 ### Disk space
 
 | Item | Approximate size |
 |---|---|
-| WS2022 gold VHDX | 10–12 GB |
-| Win11 gold VHDX | 15–20 GB |
-| Per-VM differencing disk (DC, workstation) | 2–5 GB each |
-| Per-VM differencing disk (SQL servers, 64 GB) | 10–20 GB each |
-| Total (all 6 VMs + gold images) | ~80–100 GB |
+| WS2025 gold VHDX | 12–15 GB |
+| Per-VM differencing disk (all VMs, 64 GB) | 3–20 GB each |
+| Total (all 6 VMs + gold image) | ~75–110 GB |
 
 ### RAM
 
@@ -177,16 +173,10 @@ These are built once and shared by all VMs as differencing disk parents.
 Never boot or modify the gold images directly.
 
 ```powershell
-# Windows Server 2022 gold image
+# Windows Server 2025 gold image — used by all VMs
 .\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\Users\sqlpa\OneDrive\ISO Files\en-us_windows_server_2022_updated_jan_2024_x64_dvd_2b7a0c9f.iso" `
-    -OutputVhdx "C:\HyperV\BaseImages\WS2022-Gold.vhdx"
-
-# Windows 11 gold image
-.\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\Users\sqlpa\OneDrive\ISO Files\en-us_windows_11_business_editions_version_23h2_updated_jan_2024_x64_dvd_12855bc9.iso" `
-    -OutputVhdx "C:\HyperV\BaseImages\Win11-Gold.vhdx" `
-    -Win11
+    -ISOPath    "C:\ISOs\WindowsServer2025.iso" `
+    -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
 ```
 
 > Building each image takes 10–20 minutes depending on disk speed.
@@ -199,9 +189,8 @@ Once the gold images exist, run the orchestrator to build the entire lab:
 
 ```powershell
 .\Deploy-Lab.ps1 `
-    -SQLISOPath "C:\ISOs\SQLServer2022.iso" `
-    -WS2022ISO  "C:\ISOs\WindowsServer2022.iso" `
-    -Win11ISO   "C:\ISOs\Windows11.iso"
+    -SQLISOPath "C:\ISOs\SQLServer2025.iso" `
+    -WS2025ISO  "C:\ISOs\WindowsServer2025.iso"
 ```
 
 The orchestrator runs six stages in order:
@@ -226,7 +215,7 @@ Total deployment time is approximately 60–90 minutes.
 #### Skip rebuilding gold images (faster redeployment)
 
 ```powershell
-.\Deploy-Lab.ps1 -SkipBaseImage -SQLISOPath "C:\ISOs\SQLServer2022.iso"
+.\Deploy-Lab.ps1 -SkipBaseImage -SQLISOPath "C:\ISOs\SQLServer2025.iso"
 ```
 
 ---
@@ -288,7 +277,7 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 ```powershell
 $config = Get-Content .\config.json | ConvertFrom-Json
 $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlsrv02'
-.\06-Install-SQL.ps1 -VMDef $vm -Config $config -SQLISOPath "C:\ISOs\SQLServer2022.iso"
+.\06-Install-SQL.ps1 -VMDef $vm -Config $config -SQLISOPath "C:\ISOs\SQLServer2025.iso"
 ```
 
 ---
@@ -363,8 +352,7 @@ after the move.
 |---|---|---|
 | DomainFQDN | sqllab.local | Full domain name |
 | DomainNetBIOS | SQLLAB | NetBIOS domain name |
-| GoldVhdxPath | C:\HyperV\BaseImages\WS2022-Gold.vhdx | Server 2022 base image |
-| Win11VhdxPath | C:\HyperV\BaseImages\Win11-Gold.vhdx | Windows 11 base image |
+| GoldVhdxPath | C:\HyperV\BaseImages\WS2025-Gold.vhdx | Server 2025 base image (all VMs) |
 | VMStoragePath | C:\HyperV\VMs | VM configuration files |
 | DiffDiskPath | C:\HyperV\Disks | Differencing VHDX files |
 | vSwitchInternal | sqllab-internal | Internal lab switch |
@@ -381,7 +369,7 @@ after the move.
 |---|---|
 | Name | Hostname (also used as VM name in Hyper-V) |
 | Role | DC, SQL, or Workstation |
-| OS | WS2022 or Win11 |
+| OS | WS2025 (all VMs) |
 | IP | Static IPv4 address |
 | Gateway | Default gateway (null for the DC itself) |
 | PrefixLen | Subnet prefix length (24 = /24) |
@@ -390,7 +378,7 @@ after the move.
 | MemoryGB | RAM allocation |
 | VCPU | Virtual CPU count |
 | NICs | Number of network adapters (2 for DC only) |
-| DiskSizeGB | OS disk size in GB (defaults to 60 if omitted) |
+| DiskSizeGB | OS disk size in GB (defaults to 64 if omitted) |
 | PostConfig | Ordered list of post-config scripts to run |
 
 ### SQL Server install directories
@@ -456,7 +444,7 @@ If you need to rebuild a gold image from scratch:
 # WARNING: This deletes the gold image permanently.
 # All differencing disks that depend on it will be broken.
 # Remove all dependent VMs first using Remove-Lab.ps1.
-Remove-Item "C:\HyperV\BaseImages\WS2022-Gold.vhdx" -Force
+Remove-Item "C:\HyperV\BaseImages\WS2025-Gold.vhdx" -Force
 ```
 
 ---

@@ -4,10 +4,10 @@ param(
     [Parameter(Mandatory)][PSCustomObject]$Config
 )
 
-$goldVhdx   = if ($VMDef.OS -eq 'Win11') { $Config.Win11VhdxPath } else { $Config.GoldVhdxPath }
+$goldVhdx   = $Config.GoldVhdxPath
 $diffVhdx   = Join-Path $Config.DiffDiskPath "$($VMDef.Name).vhdx"
 $vmPath     = Join-Path $Config.VMStoragePath $VMDef.Name
-$diskSizeGB = if ($VMDef.DiskSizeGB) { $VMDef.DiskSizeGB } else { 60 }
+$diskSizeGB = if ($VMDef.DiskSizeGB) { $VMDef.DiskSizeGB } else { 64 }
 
 if (Get-VM -Name $VMDef.Name -ErrorAction SilentlyContinue) {
     Write-Warning "VM $($VMDef.Name) already exists. Skipping."

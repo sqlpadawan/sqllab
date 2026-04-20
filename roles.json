@@ -2,7 +2,7 @@
   {
     "Name":       "sqllabdc01",
     "Role":       "DC",
-    "OS":         "WS2022",
+    "OS":         "WS2025",
     "IP":         "172.16.10.10",
     "Gateway":    null,
     "PrefixLen":  24,
@@ -11,12 +11,13 @@
     "MemoryGB":   4,
     "VCPU":       2,
     "NICs":       2,
+    "DiskSizeGB": 64,
     "PostConfig": ["Promote-DC.ps1", "Configure-RRAS.ps1"]
   },
   {
     "Name":       "sqlwork01",
     "Role":       "Workstation",
-    "OS":         "Win11",
+    "OS":         "WS2025",
     "IP":         "172.16.10.20",
     "Gateway":    "172.16.10.10",
     "PrefixLen":  24,
@@ -25,12 +26,13 @@
     "MemoryGB":   4,
     "VCPU":       2,
     "NICs":       1,
+    "DiskSizeGB": 64,
     "PostConfig": ["Join-Domain.ps1", "Install-SSMS.ps1"]
   },
   {
     "Name":       "sqlsrv01",
     "Role":       "SQL",
-    "OS":         "WS2022",
+    "OS":         "WS2025",
     "IP":         "172.16.10.101",
     "Gateway":    "172.16.10.10",
     "PrefixLen":  24,
@@ -45,7 +47,7 @@
   {
     "Name":       "sqlsrv02",
     "Role":       "SQL",
-    "OS":         "WS2022",
+    "OS":         "WS2025",
     "IP":         "172.16.10.102",
     "Gateway":    "172.16.10.10",
     "PrefixLen":  24,
@@ -60,7 +62,7 @@
   {
     "Name":       "sqlsrv03",
     "Role":       "SQL",
-    "OS":         "WS2022",
+    "OS":         "WS2025",
     "IP":         "192.168.10.101",
     "Gateway":    "172.16.10.10",
     "PrefixLen":  24,
@@ -75,7 +77,7 @@
   {
     "Name":       "sqlsrv04",
     "Role":       "SQL",
-    "OS":         "WS2022",
+    "OS":         "WS2025",
     "IP":         "192.168.10.102",
     "Gateway":    "172.16.10.10",
     "PrefixLen":  24,

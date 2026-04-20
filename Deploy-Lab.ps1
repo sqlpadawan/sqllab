@@ -4,7 +4,6 @@ param(
     [string]$RolesPath,
     [string]$SQLISOPath,
     [string]$WS2025ISO,
-    [string]$Win11ISO,
     [switch]$SkipBaseImage
 )
 
@@ -34,14 +33,13 @@ foreach ($s in $requiredSecrets) {
     }
 }
 
-# Step 1 - build gold images
+# Step 1 - build gold image
 if (-not $SkipBaseImage) {
-    Write-Host "`n[1/6] Building gold VHDX images..." -ForegroundColor Cyan
+    Write-Host "`n[1/6] Building gold VHDX image..." -ForegroundColor Cyan
     if (-not (Test-Path $config.GoldVhdxPath)) {
         .\01-New-LabBaseImage.ps1 -ISOPath $WS2025ISO -OutputVhdx $config.GoldVhdxPath
-    }
-    if (-not (Test-Path $config.Win11VhdxPath)) {
-        .\01-New-LabBaseImage.ps1 -ISOPath $Win11ISO -OutputVhdx $config.Win11VhdxPath -Win11
+    } else {
+        Write-Host "Gold VHDX already exists, skipping build: $($config.GoldVhdxPath)"
     }
 }
 
