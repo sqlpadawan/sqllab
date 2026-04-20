@@ -34,6 +34,68 @@ if ($PSCmdlet.ShouldProcess($diffVhdx, "Create differencing VHDX")) {
     Write-Host "[$($VMDef.Name)] Disk resized to $diskSizeGB GB."
 }
 
+# Create the VM now (before injecting unattend.xml) so we can read the MAC
+# address that Hyper-V assigns to the internal NIC. We use that MAC in the
+# specialize-pass netsh script to find the right adapter regardless of how
+# Windows names it (Ethernet, Ethernet 2, etc.).
+Write-Host "[$($VMDef.Name)] Creating VM..."
+if (-not $PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) { return }
+
+try {
+    $vm = New-VM -Name $VMDef.Name `
+                 -Path $vmPath `
+                 -Generation 2 `
+                 -MemoryStartupBytes ($VMDef.MemoryGB * 1GB) `
+                 -VHDPath $diffVhdx `
+                 -SwitchName $Config.vSwitchInternal `
+                 -ErrorAction Stop
+} catch {
+    Write-Error "[$($VMDef.Name)] New-VM failed: $_`nVerify that vSwitch '$($Config.vSwitchInternal)' exists. Run .\00-Setup-LabFolders.ps1 if needed."
+    return
+}
+
+Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
+       -DynamicMemory:$false `
+       -AutomaticCheckpointsEnabled $false
+
+Set-VMFirmware -VM $vm -EnableSecureBoot Off
+
+# The DC needs a second NIC on the external switch for internet/NAT.
+# Add it before reading MACs so both adapters are present when we snapshot them.
+if ($VMDef.NICs -eq 2) {
+    Add-VMNetworkAdapter -VM $vm -SwitchName $Config.vSwitchExternal
+    Write-Host "[$($VMDef.Name)] Added external NIC."
+}
+
+# Read the MAC address of the internal NIC (always the first adapter).
+# Hyper-V formats it as "AABBCCDDEEFF" — netsh expects "AA-BB-CC-DD-EE-FF".
+$internalMac = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress -replace '(..)', '$1-' -replace '-$', ''
+Write-Host "[$($VMDef.Name)] Internal NIC MAC: $internalMac"
+
+# Build the gateway line conditionally — the DC has no gateway.
+$gatewayCmd = if ($VMDef.Gateway) {
+    "netsh interface ipv4 add route 0.0.0.0/0 name=`"%NIC%`" nexthop=$($VMDef.Gateway) store=persistent"
+} else { "" }
+
+# This PowerShell script runs inside the VM during the specialize pass.
+# It finds the NIC by MAC address and applies the static IP, gateway, and DNS.
+# Using RunSynchronousCommand avoids the Identifier-matching bug in the
+# Microsoft-Windows-TCPIP component, which silently fails on Server 2025 when
+# the adapter name doesn't match "Local Area Connection".
+$netConfigScript = @"
+`$mac = '$internalMac'
+`$nic = Get-NetAdapter | Where-Object { `$_.MacAddress -eq `$mac }
+if (-not `$nic) { exit 1 }
+`$name = `$nic.Name
+netsh interface ipv4 set address name="`$name" static $($VMDef.IP) 255.255.255.0 $(if ($VMDef.Gateway) { $VMDef.Gateway } else { '' })
+netsh interface ipv4 set dns name="`$name" static $($VMDef.DNS) primary
+$(if ($VMDef.Gateway) { "netsh interface ipv4 add route 0.0.0.0/0 name=`"`$name`" nexthop=$($VMDef.Gateway) store=persistent" })
+"@
+
+# Encode the script as Base64 so it survives the XML embedding cleanly.
+$scriptBytes   = [System.Text.Encoding]::Unicode.GetBytes($netConfigScript)
+$encodedScript = [Convert]::ToBase64String($scriptBytes)
+
 Write-Host "[$($VMDef.Name)] Injecting unattend.xml..."
 $unattendXml = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -46,42 +108,13 @@ $unattendXml = @"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <ComputerName>$($VMDef.Name)</ComputerName>
       <TimeZone>$($Config.TimeZone)</TimeZone>
-    </component>
-    <component name="Microsoft-Windows-TCPIP"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral" versionScope="nonSxS"
-               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-      <Interfaces>
-        <Interface wcm:action="add">
-          <Identifier>Local Area Connection</Identifier>
-          <Ipv4Settings><DhcpEnabled>false</DhcpEnabled></Ipv4Settings>
-          <UnicastIpAddresses>
-            <IpAddress wcm:action="add" wcm:keyValue="1">
-              $($VMDef.IP)/$($VMDef.PrefixLen)
-            </IpAddress>
-          </UnicastIpAddresses>
-          $(if ($VMDef.Gateway) {
-            "<Routes><Route wcm:action=`"add`"><Identifier>0</Identifier>" +
-            "<Metric>256</Metric><NextHopAddress>$($VMDef.Gateway)</NextHopAddress>" +
-            "<Prefix>0.0.0.0/0</Prefix></Route></Routes>"
-          })
-        </Interface>
-      </Interfaces>
-    </component>
-    <component name="Microsoft-Windows-DNS-Client"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral" versionScope="nonSxS"
-               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-      <Interfaces>
-        <Interface wcm:action="add">
-          <Identifier>Local Area Connection</Identifier>
-          <DNSServerSearchOrder>
-            <IpAddress wcm:action="add" wcm:keyValue="1">$($VMDef.DNS)</IpAddress>
-          </DNSServerSearchOrder>
-        </Interface>
-      </Interfaces>
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Configure static IP via MAC address</Description>
+          <Path>powershell.exe -NonInteractive -EncodedCommand $encodedScript</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
     </component>
   </settings>
   <settings pass="oobeSystem">
@@ -119,51 +152,23 @@ $unattendXml = @"
 </unattend>
 "@
 
-if ($PSCmdlet.ShouldProcess($diffVhdx, "Inject unattend.xml")) {
-    $mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
-        Where-Object { $_.Type -eq 'Basic' } | Get-Volume
-    $driveLetter = $mountedVhd.DriveLetter
-    $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
-    New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
-    $unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
-    Dismount-VHD $diffVhdx
-}
+# Mount the VHDX and inject unattend.xml before first boot.
+$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
+    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
+$driveLetter  = $mountedVhd.DriveLetter
+$unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
+New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
+$unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
+Dismount-VHD $diffVhdx
 
-Write-Host "[$($VMDef.Name)] Creating VM..."
-if ($PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) {
-    try {
-        $vm = New-VM -Name $VMDef.Name `
-                     -Path $vmPath `
-                     -Generation 2 `
-                     -MemoryStartupBytes ($VMDef.MemoryGB * 1GB) `
-                     -VHDPath $diffVhdx `
-                     -SwitchName $Config.vSwitchInternal `
-                     -ErrorAction Stop
-    } catch {
-        Write-Error "[$($VMDef.Name)] New-VM failed: $_`nVerify that vSwitch '$($Config.vSwitchInternal)' exists. Run .\00-Setup-LabFolders.ps1 if needed."
-        return
+Start-VM -VM $vm
+Write-Host "[$($VMDef.Name)] VM started. Waiting for WinRM on $($VMDef.IP)..."
+
+$deadline = (Get-Date).AddMinutes(15)
+while ((Get-Date) -lt $deadline) {
+    if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
+        Write-Host "[$($VMDef.Name)] WinRM is up."
+        break
     }
-
-    Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
-           -DynamicMemory:$false `
-           -AutomaticCheckpointsEnabled $false
-
-    Set-VMFirmware -VM $vm -EnableSecureBoot Off
-
-    if ($VMDef.NICs -eq 2) {
-        Add-VMNetworkAdapter -VM $vm -SwitchName $Config.vSwitchExternal
-        Write-Host "[$($VMDef.Name)] Added external NIC."
-    }
-
-    Start-VM -VM $vm
-    Write-Host "[$($VMDef.Name)] VM started. Waiting for WinRM..."
-
-    $deadline = (Get-Date).AddMinutes(15)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
-            Write-Host "[$($VMDef.Name)] WinRM is up."
-            break
-        }
-        Start-Sleep -Seconds 15
-    }
+    Start-Sleep -Seconds 15
 }

@@ -77,4 +77,35 @@ if ($intSwitch) {
     }
 }
 
+# Assign a static IP to the host vNIC on the internal switch so the host can
+# reach lab VMs directly via PSRemoting. Without this the vNIC gets only a
+# 169.254.x.x link-local address and all WinRM connections time out.
+Write-Host "Configuring host IP on internal vSwitch..."
+$hostVnic = Get-NetAdapter | Where-Object {
+    $_.Name -like "*$($config.vSwitchInternal)*" -and $_.Status -eq 'Up'
+}
+if (-not $hostVnic) {
+    Write-Warning "Could not find a host vNIC for '$($config.vSwitchInternal)'. Assign $($config.HostInternalIP)/24 manually."
+} else {
+    $existing = Get-NetIPAddress -InterfaceIndex $hostVnic.ifIndex `
+                    -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -eq $config.HostInternalIP }
+    if ($existing) {
+        Write-Host "Exists:  Host vNIC already has $($config.HostInternalIP)"
+    } else {
+        # Remove any stale link-local or previously assigned addresses first
+        Get-NetIPAddress -InterfaceIndex $hostVnic.ifIndex -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.PrefixOrigin -ne 'WellKnown' } |
+            Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+
+        if ($PSCmdlet.ShouldProcess($hostVnic.Name, "Assign $($config.HostInternalIP)/24")) {
+            New-NetIPAddress -InterfaceIndex $hostVnic.ifIndex `
+                             -IPAddress $config.HostInternalIP `
+                             -PrefixLength 24 | Out-Null
+            Write-Host "Assigned: $($config.HostInternalIP)/24 on $($hostVnic.Name)"
+        }
+    }
+}
+
 Write-Host "`nHost setup complete."

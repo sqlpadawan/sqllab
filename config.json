@@ -8,6 +8,7 @@
   "SQLISOPath":        "C:\\HyperV\\ISO\\SQLServer2025.iso",
   "vSwitchInternal":   "sqllab-internal",
   "vSwitchExternal":   "sqllab-external",
+  "HostInternalIP":    "172.16.10.1",
   "DCExternalNIC":     "Ethernet 0",
   "DCInternalNIC":     "Ethernet 1",
   "DefaultVCPU":       2,

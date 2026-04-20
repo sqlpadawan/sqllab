@@ -2,8 +2,8 @@
 param(
     [string]$ConfigPath,
     [string]$RolesPath,
-    [string]$SQLISOPath,   # Optional override — defaults to config.json SQLISOPath
-    [string]$WS2025ISO,    # Optional override — defaults to config.json WS2025ISOPath
+    [string]$SQLISOPath,   # Optional override â€” defaults to config.json SQLISOPath
+    [string]$WS2025ISO,    # Optional override â€” defaults to config.json WS2025ISOPath
     [switch]$SkipBaseImage
 )
 
@@ -64,14 +64,14 @@ foreach ($vm in $roles) {
     .\02-New-LabVM.ps1 -VMDef $vm -Config $config -WhatIf:$WhatIfPreference
 }
 
-# Abort remaining stages during a WhatIf run — VMs were not created
+# Abort remaining stages during a WhatIf run â€” VMs were not created
 if ($WhatIfPreference) {
-    Write-Host "`n[WhatIf] Stages 3-6 skipped — no VMs were created." -ForegroundColor Yellow
+    Write-Host "`n[WhatIf] Stages 3-6 skipped â€” no VMs were created." -ForegroundColor Yellow
     Write-Host "Re-run without -WhatIf to perform the full deployment."
     return
 }
 
-# Ensure WinRM is running on the host — required before WSMan:\ drive is usable
+# Ensure WinRM is running on the host â€” required before WSMan:\ drive is usable
 Write-Host "`nConfiguring WinRM TrustedHosts..." -ForegroundColor Cyan
 $winrm = Get-Service -Name WinRM
 if ($winrm.Status -ne 'Running') {

@@ -49,12 +49,16 @@ internet access. RRAS on the DC provides NAT and routing for all lab VMs.
 
 ### ISO placement
 
-Place your ISO files here before running the scripts:
+The default ISO paths are defined in `config.json` (`WS2025ISOPath` and `SQLISOPath`).
+The defaults point to:
 
 ```
 C:\HyperV\ISO\WindowsServer2025.iso
 C:\HyperV\ISO\SQLServer2025.iso
 ```
+
+Place your ISO files at those paths, or edit the two keys in `config.json` to point
+wherever your ISOs actually live before running any scripts.
 
 ### Disk space
 
@@ -175,10 +179,16 @@ This script:
 These are built once and shared by all VMs as differencing disk parents.
 Never boot or modify the gold images directly.
 
+The ISO path is read from `WS2025ISOPath` in `config.json`. If you need to
+override it for a one-off build, pass `-ISOPath` explicitly:
+
 ```powershell
-# Windows Server 2025 gold image — used by all VMs
+# Uses the path from config.json automatically
+.\01-New-LabBaseImage.ps1 -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
+
+# Override the ISO path if needed
 .\01-New-LabBaseImage.ps1 `
-    -ISOPath    "C:\HyperV\ISO\WindowsServer2025.iso" `
+    -ISOPath    "D:\ISOs\WindowsServer2025.iso" `
     -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
 ```
 
@@ -188,12 +198,20 @@ Never boot or modify the gold images directly.
 
 ### Step 4 — Full automated deployment
 
-Once the gold images exist, run the orchestrator to build the entire lab:
+Once the gold images exist, run the orchestrator to build the entire lab. ISO paths
+are read automatically from `config.json` — no parameters required:
+
+```powershell
+.\Deploy-Lab.ps1
+```
+
+If you need to use ISOs from a different location for a single run, you can still
+override either path on the command line:
 
 ```powershell
 .\Deploy-Lab.ps1 `
-    -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso" `
-    -WS2025ISO  "C:\HyperV\ISO\WindowsServer2025.iso"
+    -SQLISOPath "D:\ISOs\SQLServer2025.iso" `
+    -WS2025ISO  "D:\ISOs\WindowsServer2025.iso"
 ```
 
 The orchestrator runs six stages in order:
@@ -218,7 +236,7 @@ Total deployment time is approximately 60–90 minutes.
 #### Skip rebuilding gold images (faster redeployment)
 
 ```powershell
-.\Deploy-Lab.ps1 -SkipBaseImage -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso"
+.\Deploy-Lab.ps1 -SkipBaseImage
 ```
 
 ---
@@ -277,10 +295,13 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 
 ### Install SQL Server on a single VM
 
+The ISO path is read from `SQLISOPath` in `config.json`. Pass `-SQLISOPath` to
+override it for a one-off run.
+
 ```powershell
 $config = Get-Content .\config.json | ConvertFrom-Json
 $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlsrv02'
-.\06-Install-SQL.ps1 -VMDef $vm -Config $config -SQLISOPath "C:\HyperV\ISO\SQLServer2025.iso"
+.\06-Install-SQL.ps1 -VMDef $vm -Config $config
 ```
 
 ---
@@ -358,8 +379,11 @@ after the move.
 | GoldVhdxPath | C:\HyperV\BaseImages\WS2025-Gold.vhdx | Server 2025 base image (all VMs) |
 | VMStoragePath | C:\HyperV\VMs | VM configuration files |
 | DiffDiskPath | C:\HyperV\Disks | Differencing VHDX files |
+| WS2025ISOPath | C:\HyperV\ISO\WindowsServer2025.iso | Windows Server 2025 ISO used to build the gold image |
+| SQLISOPath | C:\HyperV\ISO\SQLServer2025.iso | SQL Server ISO used by Deploy-Lab.ps1 and 06-Install-SQL.ps1 |
 | vSwitchInternal | sqllab-internal | Internal lab switch |
 | vSwitchExternal | sqllab-external | External (internet) switch |
+| HostInternalIP | 172.16.10.1 | Static IP assigned to the host vNIC on the internal switch — required for PSRemoting to reach lab VMs |
 | DefaultVCPU | 2 | vCPU count for non-SQL VMs |
 | DefaultMemoryGB | 4 | RAM for non-SQL VMs |
 | SQLMemoryGB | 6 | RAM for SQL Server VMs |
@@ -410,6 +434,38 @@ All SQL Server VMs use the following directory layout:
 ---
 
 ## Troubleshooting
+
+### WinRM connection times out immediately (before promotion or domain join)
+
+If `Invoke-Command` fails with a WinRM timeout on every VM, the host vNIC on
+the internal switch likely has no IP. This is the most common cause of the error:
+
+```
+WinRM cannot complete the operation... firewall exception... local subnet
+```
+
+Verify:
+
+```powershell
+Get-NetIPAddress -InterfaceAlias *sqllab-internal* | Select-Object IPAddress, PrefixLength
+```
+
+If the result shows only a `169.254.x.x` link-local address, the host can't reach
+the lab subnet. Fix it by running `00-Setup-LabFolders.ps1` (which now assigns the
+IP automatically), or assign it manually:
+
+```powershell
+$adapter = Get-NetAdapter | Where-Object { $_.Name -like '*sqllab-internal*' }
+New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress 172.16.10.1 -PrefixLength 24
+```
+
+Then resume from the failed stage without rebuilding VMs:
+
+```powershell
+$config = Get-Content .\config.json | ConvertFrom-Json
+$dc     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Role -eq 'DC'
+.\03-Promote-DC.ps1 -VMDef $dc -Config $config
+```
 
 ### WinRM not responding after VM boot
 
