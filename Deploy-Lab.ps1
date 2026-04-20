@@ -57,8 +57,16 @@ if ($WhatIfPreference) {
     return
 }
 
-# Add lab VM IPs to WinRM TrustedHosts so PSRemoting works from a non-domain host
+# Ensure WinRM is running on the host — required before WSMan:\ drive is usable
 Write-Host "`nConfiguring WinRM TrustedHosts..." -ForegroundColor Cyan
+$winrm = Get-Service -Name WinRM
+if ($winrm.Status -ne 'Running') {
+    Write-Host "Starting WinRM service on host..."
+    Start-Service WinRM
+    Set-Service  WinRM -StartupType Automatic
+}
+
+# Add lab VM IPs to WinRM TrustedHosts so PSRemoting works from a non-domain host
 $labIPs       = ($roles.IP) -join ','
 $currentHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
 if ($currentHosts -notmatch [regex]::Escape($labIPs)) {

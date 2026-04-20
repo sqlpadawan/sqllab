@@ -142,7 +142,13 @@ Write-Host "`nAll secrets stored in SqlLabVault. Run 'Unlock-SecretVault -Name S
 ```
 
 > **Note:** The vault master password is required each PowerShell session.
-> Run `Unlock-SecretVault -Name SqlLabVault` if prompted during deployment.
+> Run the following at the start of each new session before deploying. The
+> `-PasswordTimeout -1` keeps the vault unlocked for the entire session so
+> you are not prompted repeatedly during deployment:
+> ```powershell
+> Unlock-SecretVault -Name SqlLabVault
+> Set-SecretStoreConfiguration -Scope CurrentUser -Authentication Password -PasswordTimeout -1 -Confirm:$false
+> ```
 
 ---
 
