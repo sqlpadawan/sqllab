@@ -2,8 +2,8 @@
 param(
     [string]$ConfigPath,
     [string]$RolesPath,
-    [string]$SQLISOPath,
-    [string]$WS2025ISO,
+    [string]$SQLISOPath,   # Optional override — defaults to config.json SQLISOPath
+    [string]$WS2025ISO,    # Optional override — defaults to config.json WS2025ISOPath
     [switch]$SkipBaseImage
 )
 
@@ -18,10 +18,24 @@ if (-not $RolesPath)  { $RolesPath  = Join-Path $PSScriptRoot "roles.json"  }
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 $roles  = Get-Content $RolesPath  | ConvertFrom-Json
 
+# Resolve ISO paths: CLI parameter wins; fall back to config.json
+if (-not $SQLISOPath) { $SQLISOPath = $config.SQLISOPath  }
+if (-not $WS2025ISO)  { $WS2025ISO  = $config.WS2025ISOPath }
+
+# Validate ISO paths exist before doing any real work
+if (-not $SkipBaseImage -and -not (Test-Path $WS2025ISO)) {
+    throw "WS2025 ISO not found: '$WS2025ISO'`nUpdate WS2025ISOPath in config.json or pass -WS2025ISO."
+}
+if (-not (Test-Path $SQLISOPath)) {
+    throw "SQL Server ISO not found: '$SQLISOPath'`nUpdate SQLISOPath in config.json or pass -SQLISOPath."
+}
+
 Write-Host "`n=== sqllab.local deployment ===" -ForegroundColor Cyan
-Write-Host "Domain : $($config.DomainFQDN)"
-Write-Host "VMs    : $($roles.Count)"
-Write-Host "WhatIf : $($WhatIfPreference)`n"
+Write-Host "Domain    : $($config.DomainFQDN)"
+Write-Host "VMs       : $($roles.Count)"
+Write-Host "WS2025ISO : $WS2025ISO"
+Write-Host "SQLISO    : $SQLISOPath"
+Write-Host "WhatIf    : $($WhatIfPreference)`n"
 
 # Step 0 - ensure vault has required secrets
 $requiredSecrets = @('LocalAdminPass','DomainAdminPass','DSSafeModePass',

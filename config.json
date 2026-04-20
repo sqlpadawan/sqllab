@@ -4,6 +4,8 @@
   "GoldVhdxPath":      "C:\\HyperV\\BaseImages\\WS2025-Gold.vhdx",
   "VMStoragePath":     "C:\\HyperV\\VMs",
   "DiffDiskPath":      "C:\\HyperV\\Disks",
+  "WS2025ISOPath":     "C:\\HyperV\\ISO\\WindowsServer2025.iso",
+  "SQLISOPath":        "C:\\HyperV\\ISO\\SQLServer2025.iso",
   "vSwitchInternal":   "sqllab-internal",
   "vSwitchExternal":   "sqllab-external",
   "DCExternalNIC":     "Ethernet 0",
