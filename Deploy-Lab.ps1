@@ -21,7 +21,7 @@ $roles  = Get-Content $RolesPath  | ConvertFrom-Json
 Write-Host "`n=== sqllab.local deployment ===" -ForegroundColor Cyan
 Write-Host "Domain : $($config.DomainFQDN)"
 Write-Host "VMs    : $($roles.Count)"
-Write-Host "WhatIf : $WhatIf`n"
+Write-Host "WhatIf : $($WhatIfPreference)`n"
 
 # Step 0 - ensure vault has required secrets
 $requiredSecrets = @('LocalAdminPass','DomainAdminPass','DSSafeModePass',
@@ -47,7 +47,30 @@ if (-not $SkipBaseImage) {
 Write-Host "`n[2/6] Provisioning VMs..." -ForegroundColor Cyan
 foreach ($vm in $roles) {
     Write-Host "  -> $($vm.Name)"
-    .\02-New-LabVM.ps1 -VMDef $vm -Config $config -WhatIf:$WhatIf
+    .\02-New-LabVM.ps1 -VMDef $vm -Config $config -WhatIf:$WhatIfPreference
+}
+
+# Abort remaining stages during a WhatIf run — VMs were not created
+if ($WhatIfPreference) {
+    Write-Host "`n[WhatIf] Stages 3-6 skipped — no VMs were created." -ForegroundColor Yellow
+    Write-Host "Re-run without -WhatIf to perform the full deployment."
+    return
+}
+
+# Add lab VM IPs to WinRM TrustedHosts so PSRemoting works from a non-domain host
+Write-Host "`nConfiguring WinRM TrustedHosts..." -ForegroundColor Cyan
+$labIPs       = ($roles.IP) -join ','
+$currentHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
+if ($currentHosts -notmatch [regex]::Escape($labIPs)) {
+    $newHosts = if ($currentHosts -and $currentHosts -ne '*') {
+        "$currentHosts,$labIPs"
+    } else {
+        $labIPs
+    }
+    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newHosts -Force
+    Write-Host "TrustedHosts updated: $newHosts"
+} else {
+    Write-Host "TrustedHosts already contains lab IPs."
 }
 
 # Step 3 - promote DC

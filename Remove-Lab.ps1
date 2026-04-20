@@ -126,6 +126,31 @@ foreach ($vm in $roles) {
     }
 }
 
+# Sweep DiffDiskPath for orphaned VHDXs that match role names but were never
+# registered as Hyper-V VMs (e.g. left behind by a failed New-VM call).
+Write-Host "`nChecking for orphaned differencing disks..." -ForegroundColor Cyan
+$roleNames = $roles.Name
+foreach ($vhdx in (Get-ChildItem $config.DiffDiskPath -Filter "*.vhdx" -ErrorAction SilentlyContinue)) {
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($vhdx.Name)
+    if ($baseName -in $roleNames) {
+        # Only remove if no Hyper-V VM is currently using this disk
+        $inUse = Get-VM -ErrorAction SilentlyContinue |
+            Get-VMHardDiskDrive |
+            Where-Object { $_.Path -ieq $vhdx.FullName }
+        if (-not $inUse) {
+            Write-Host "Orphaned disk found: $($vhdx.FullName)"
+            if ($PSCmdlet.ShouldProcess($vhdx.FullName, "Delete orphaned VHDX")) {
+                try {
+                    Remove-Item -Path $vhdx.FullName -Force -ErrorAction Stop
+                    Write-Host "Deleted orphaned disk: $($vhdx.FullName)"
+                } catch {
+                    $errors.Add("Failed to delete orphaned disk $($vhdx.FullName) : $_")
+                }
+            }
+        }
+    }
+}
+
 # Remove lab virtual switches
 Write-Host "`nRemoving virtual switches..." -ForegroundColor Cyan
 foreach ($switchName in @($config.vSwitchInternal, $config.vSwitchExternal)) {
@@ -146,7 +171,7 @@ foreach ($switchName in @($config.vSwitchInternal, $config.vSwitchExternal)) {
 
 # Optionally remove gold images
 if ($IncludeGoldImages) {
-    foreach ($vhdx in @($config.GoldVhdxPath, $config.Win11VhdxPath)) {
+    foreach ($vhdx in @($config.GoldVhdxPath)) {
         if (Test-Path $vhdx) {
             # WARNING: Deletes gold base images - you will need to rebuild
             # from ISO if you want to redeploy the lab from scratch.
@@ -174,4 +199,4 @@ if ($errors.Count -gt 0) {
 }
 
 Write-Host "`nTo redeploy the lab:"
-Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\ISOs\SQLServer2022.iso' ..."
+Write-Host "  .\Deploy-Lab.ps1 -SQLISOPath 'C:\ISOs\SQLServer2025.iso' ..."

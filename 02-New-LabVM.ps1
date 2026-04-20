@@ -14,14 +14,24 @@ if (Get-VM -Name $VMDef.Name -ErrorAction SilentlyContinue) {
     return
 }
 
+# Abort if an orphaned differencing disk already exists — do not overwrite it.
+# Run Remove-Lab.ps1 or manually delete the file before retrying.
+if (Test-Path $diffVhdx) {
+    Write-Error "[$($VMDef.Name)] Orphaned differencing disk found: $diffVhdx`nDelete it before retrying: Remove-Item '$diffVhdx' -Force"
+    return
+}
+
 Write-Host "[$($VMDef.Name)] Creating differencing disk ($diskSizeGB GB) from $goldVhdx"
 if ($PSCmdlet.ShouldProcess($diffVhdx, "Create differencing VHDX")) {
-    New-VHD -Path $diffVhdx -ParentPath $goldVhdx -Differencing | Out-Null
-
-    if ($VMDef.DiskSizeGB) {
-        Resize-VHD -Path $diffVhdx -SizeBytes ($diskSizeGB * 1GB)
-        Write-Host "[$($VMDef.Name)] Disk resized to $diskSizeGB GB."
+    try {
+        New-VHD -Path $diffVhdx -ParentPath $goldVhdx -Differencing -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Error "[$($VMDef.Name)] New-VHD failed: $_"
+        return
     }
+
+    Resize-VHD -Path $diffVhdx -SizeBytes ($diskSizeGB * 1GB)
+    Write-Host "[$($VMDef.Name)] Disk resized to $diskSizeGB GB."
 }
 
 Write-Host "[$($VMDef.Name)] Injecting unattend.xml..."
@@ -121,12 +131,18 @@ if ($PSCmdlet.ShouldProcess($diffVhdx, "Inject unattend.xml")) {
 
 Write-Host "[$($VMDef.Name)] Creating VM..."
 if ($PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) {
-    $vm = New-VM -Name $VMDef.Name `
-                 -Path $vmPath `
-                 -Generation 2 `
-                 -MemoryStartupBytes ($VMDef.MemoryGB * 1GB) `
-                 -VHDPath $diffVhdx `
-                 -SwitchName $Config.vSwitchInternal
+    try {
+        $vm = New-VM -Name $VMDef.Name `
+                     -Path $vmPath `
+                     -Generation 2 `
+                     -MemoryStartupBytes ($VMDef.MemoryGB * 1GB) `
+                     -VHDPath $diffVhdx `
+                     -SwitchName $Config.vSwitchInternal `
+                     -ErrorAction Stop
+    } catch {
+        Write-Error "[$($VMDef.Name)] New-VM failed: $_`nVerify that vSwitch '$($Config.vSwitchInternal)' exists. Run .\00-Setup-LabFolders.ps1 if needed."
+        return
+    }
 
     Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
            -DynamicMemory:$false `

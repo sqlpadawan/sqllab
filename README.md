@@ -69,12 +69,9 @@ C:\HyperV\ISO\SQLServer2025.iso
 | VM | Allocated RAM |
 |---|---|
 | sqllabdc01 | 4 GB |
-| sqlwork01 | 4 GB |
-| sqlsrv01–04 | 6 GB each |
-| **Total** | **32 GB** |
-
-A host with 32 GB RAM can run all VMs simultaneously. With 16 GB you can run
-the DC and two SQL servers at a time.
+| sqlwork01 | 8 GB |
+| sqlsrv01–04 | 4 GB each |
+| **Total** | **28 GB** |
 
 ---
 
