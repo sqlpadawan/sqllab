@@ -250,12 +250,19 @@ if (`$nic) {
 
 } -ArgumentList $mac, $vmIP, $vmPrefix, $vmGateway, $vmDNS
 
-Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP)..."
-$deadline = (Get-Date).AddMinutes(10)
-while ((Get-Date) -lt $deadline) {
-    if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
-        Write-Host "[$($VMDef.Name)] WinRM is up."
-        break
+# Only poll WinRM for VMs the host can reach directly (172.16.10.x subnet).
+# VMs on 192.168.10.x route through RRAS which isn't configured until stage 4,
+# so skip the wait for those - they will be reachable after stage 4 completes.
+if ($VMDef.IP -like '172.16.*') {
+    Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP)..."
+    $deadline = (Get-Date).AddMinutes(10)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
+            Write-Host "[$($VMDef.Name)] WinRM is up."
+            break
+        }
+        Start-Sleep -Seconds 15
     }
-    Start-Sleep -Seconds 15
+} else {
+    Write-Host "[$($VMDef.Name)] Skipping WinRM check - $($VMDef.IP) requires RRAS routing (configured in stage 4)."
 }
