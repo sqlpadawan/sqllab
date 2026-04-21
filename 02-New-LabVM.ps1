@@ -136,12 +136,26 @@ $unattendXml = @"
 </unattend>
 "@
 
-$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
-    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
-$driveLetter  = $mountedVhd.DriveLetter
+# Mount the VHDX and find the Windows partition by looking for Windows\System32.
+# Using label or size is fragile; checking for the Windows folder is definitive.
+$mountedDisk = Mount-VHD $diffVhdx -PassThru | Get-Disk
+$driveLetter = $null
+foreach ($part in ($mountedDisk | Get-Partition | Where-Object { $_.DriveLetter -ne [char]0 })) {
+    if (Test-Path "$($part.DriveLetter):\Windows\System32") {
+        $driveLetter = $part.DriveLetter
+        break
+    }
+}
+if (-not $driveLetter) {
+    Dismount-VHD $diffVhdx
+    Write-Error "[$($VMDef.Name)] Could not find Windows partition in $diffVhdx"
+    return
+}
+Write-Host "[$($VMDef.Name)] Windows partition: ${driveLetter}:"
 $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
 New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
 [System.IO.File]::WriteAllText($unattendPath, $unattendXml, [System.Text.UTF8Encoding]::new($false))
+Write-Host "[$($VMDef.Name)] unattend.xml written to $unattendPath"
 Dismount-VHD $diffVhdx
 
 Start-VM -VM $vm
