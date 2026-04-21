@@ -33,7 +33,16 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
 
 } -ArgumentList $Config.DomainFQDN, $Config.DomainNetBIOS, $safeModePw
 
-Write-Host "[$($VMDef.Name)] Waiting for reboot and AD DS to come online..."
+# Install-ADDSForest reboots the VM. On some Hyper-V hosts the VM shuts down
+# instead of restarting. Wait briefly then ensure it is running before polling.
+Write-Host "[$($VMDef.Name)] Waiting for DC reboot..."
+Start-Sleep -Seconds 30
+$vmState = (Get-VM -Name $VMDef.Name).State
+if ($vmState -ne 'Running') {
+    Write-Host "[$($VMDef.Name)] VM is '$vmState' - starting it now..."
+    Start-VM -Name $VMDef.Name
+}
+Write-Host "[$($VMDef.Name)] Waiting for AD DS to come online..."
 Start-Sleep -Seconds 60
 
 $domainCred = New-Object PSCredential(

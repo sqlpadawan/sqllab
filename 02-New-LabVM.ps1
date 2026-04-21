@@ -53,7 +53,9 @@ try {
 
 Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
        -DynamicMemory:$false `
-       -AutomaticCheckpointsEnabled $false
+       -AutomaticCheckpointsEnabled $false `
+       -AutomaticStopAction ShutDown `
+       -AutomaticStartAction StartIfRunning
 
 Set-VMFirmware -VM $vm -EnableSecureBoot Off
 
