@@ -65,17 +65,25 @@ if ($VMDef.NICs -eq 2) {
     Write-Host "[$($VMDef.Name)] Added external NIC."
 }
 
-# Assign a static MAC address within the Hyper-V pool range (00-15-5D-xx-xx-xx).
-# Dynamic assignment is unreliable on some hosts - static is more robust.
-# Use the last two octets of the VM IP to generate a unique MAC per VM.
+# Generate static MACs from the Hyper-V host MAC pool and assign them explicitly.
+# Dynamic MAC assignment can fail on some hosts (returns 000000000000 indefinitely).
+# Internal NIC uses IP octets 2-3-4 as suffix; external NIC (DC only) increments last byte.
 $ipOctets  = $VMDef.IP -split '\.'
 $macSuffix = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], [int]$ipOctets[3]
 $staticMac = "00155D$macSuffix"
 Write-Host "[$($VMDef.Name)] Assigning static MAC: $staticMac"
-Set-VMNetworkAdapter -VM $vm -StaticMacAddress $staticMac
+Set-VMNetworkAdapter -VMNetworkAdapterId (Get-VMNetworkAdapter -VM $vm)[0].Id -StaticMacAddress $staticMac
 $rawMac       = $staticMac
 $formattedMac = $rawMac -replace '(..(?!$))', '$1-'
 Write-Host "[$($VMDef.Name)] Internal NIC MAC: $formattedMac"
+
+# Assign a distinct MAC to the external NIC if present (DC only)
+if ($VMDef.NICs -eq 2) {
+    $extSuffix  = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], ([int]$ipOctets[3] + 1)
+    $extStaticMac = "00155D$extSuffix"
+    Set-VMNetworkAdapter -VMNetworkAdapterId (Get-VMNetworkAdapter -VM $vm)[1].Id -StaticMacAddress $extStaticMac
+    Write-Host "[$($VMDef.Name)] External NIC MAC: $($extStaticMac -replace '(..(?!$))', '$1-')"
+}
 
 $localAdminPass = Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault -AsPlainText
 
