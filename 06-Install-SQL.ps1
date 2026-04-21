@@ -63,13 +63,12 @@ if (-not (Test-Path $vmISODest)) {
 }
 Remove-PSDrive -Name 'VMDrive' -Force
 
+# Run SQL setup via a scheduled task on the VM as SYSTEM.
+# This avoids the PSRemoting double-hop credential delegation issue that causes
+# SQL setup to fail with a CryptographicException when run inside Invoke-Command.
+Write-Host "[$($VMDef.Name)] Preparing SQL Server setup on VM..."
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     param($ISOPath, $IniContent)
-
-    Write-Host "Mounting SQL Server ISO..."
-    $mount = Mount-DiskImage -ImagePath $ISOPath -PassThru
-    $drive = ($mount | Get-Volume).DriveLetter
-    $setup = "${drive}:\setup.exe"
 
     Write-Host "Creating SQL directories..."
     foreach ($dir in @('C:\SQLData','C:\SQLLogs','C:\SQLTempDB','C:\SQLBackups')) {
@@ -80,17 +79,47 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     $iniPath = "C:\Windows\Temp\SqlConfig.ini"
     $IniContent | Out-File $iniPath -Encoding ascii
 
-    Write-Host "Running SQL Server setup..."
-    $result = Start-Process -FilePath $setup `
-        -ArgumentList "/ConfigurationFile=`"$iniPath`"" `
-        -Wait -PassThru -NoNewWindow
+    Write-Host "Mounting SQL Server ISO..."
+    $mount  = Mount-DiskImage -ImagePath $ISOPath -PassThru
+    $drive  = ($mount | Get-Volume).DriveLetter
+    $setup  = "${drive}:\setup.exe"
 
-    if ($result.ExitCode -notin @(0, 3010)) {
-        throw "SQL setup failed with exit code $($result.ExitCode). Check C:\Program Files\Microsoft SQL Server\*\Setup Bootstrap\Log\"
+    # Register a scheduled task to run setup as SYSTEM (avoids double-hop DPAPI issue)
+    $action    = New-ScheduledTaskAction -Execute $setup `
+                     -Argument "/ConfigurationFile=`"$iniPath`" /Q"
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    Register-ScheduledTask -TaskName 'SQLSetup' -Action $action `
+        -Principal $principal -Settings $settings -Force | Out-Null
+
+    Write-Host "Starting SQL Server setup task..."
+    Start-ScheduledTask -TaskName 'SQLSetup'
+
+} -ArgumentList $localISO, $configIni
+
+# Poll until the scheduled task completes
+Write-Host "[$($VMDef.Name)] Waiting for SQL Server setup to complete (this takes 15-20 minutes)..."
+$deadline = (Get-Date).AddMinutes(60)
+while ((Get-Date) -lt $deadline) {
+    $state = Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+        (Get-ScheduledTask -TaskName 'SQLSetup').State
     }
+    if ($state -eq 'Ready' -or [int]$state -eq 3) { break }
+    Write-Host "[$($VMDef.Name)] Setup running... waiting 30s"
+    Start-Sleep -Seconds 30
+}
 
-    Dismount-DiskImage -ImagePath $localISO | Out-Null
-    Remove-Item $localISO -Force -ErrorAction SilentlyContinue
+# Check exit code and clean up
+Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+    param($ISOPath)
+    $result = (Get-ScheduledTaskInfo -TaskName 'SQLSetup').LastTaskResult
+    Unregister-ScheduledTask -TaskName 'SQLSetup' -Confirm:$false -ErrorAction SilentlyContinue
+    Dismount-DiskImage -ImagePath $ISOPath -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item $ISOPath -Force -ErrorAction SilentlyContinue
+
+    if ($result -notin @(0, 3010)) {
+        throw "SQL setup failed with exit code $result. Check C:\Program Files\Microsoft SQL Server\*\Setup Bootstrap\Log\"
+    }
 
     Write-Host "Configuring SQL Server firewall rule..."
     New-NetFirewallRule -DisplayName "SQL Server Default Instance" `
@@ -98,5 +127,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         -ErrorAction SilentlyContinue | Out-Null
 
     Write-Host "SQL Server installation complete."
-
-} -ArgumentList $localISO, $configIni
+} -ArgumentList $localISO
