@@ -121,6 +121,19 @@ if (-not $hostVnic) {
     }
 }
 
+# Add a host route so DC-B subnet traffic (192.168.10.x) goes through the
+# internal vSwitch via the DC, not out through the external switch.
+# Without this the host uses the wrong interface to reach DC-B VMs.
+Write-Host "Configuring host route for DC-B subnet..."
+$internalIdx = (Get-NetAdapter | Where-Object { $_.Name -like "*$($config.vSwitchInternal)*" }).ifIndex
+if ($internalIdx) {
+    New-NetRoute -DestinationPrefix '192.168.10.0/24' `
+                 -InterfaceIndex $internalIdx `
+                 -NextHop 172.16.10.10 `
+                 -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "DC-B route added: 192.168.10.0/24 via 172.16.10.10 on internal switch"
+}
+
 # Wait for vSwitch NIC bindings to fully initialize before returning.
 # On hosts using Wi-Fi adapters for the external switch this can take several
 # seconds and Hyper-V will return 000000000000 MACs for new VMs if we proceed

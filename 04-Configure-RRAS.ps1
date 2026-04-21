@@ -57,6 +57,18 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
     New-NetRoute -DestinationPrefix "192.168.10.0/24" `
         -InterfaceAlias $int.Name -RouteMetric 10 -ErrorAction SilentlyContinue
 
+    # Add 192.168.10.1 to the internal NIC so DC-B VMs (192.168.10.x) have a
+    # reachable gateway on their own subnet. Without this they cannot route
+    # through the DC even though RRAS is running.
+    $existing = Get-NetIPAddress -InterfaceAlias $int.Name -AddressFamily IPv4 `
+        -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq '192.168.10.1' }
+    if (-not $existing) {
+        New-NetIPAddress -InterfaceAlias $int.Name `
+                         -IPAddress 192.168.10.1 `
+                         -PrefixLength 24 | Out-Null
+        Write-Host "Added 192.168.10.1/24 to $($int.Name) for DC-B routing."
+    }
+
     Write-Host "RRAS configuration complete."
 
 } -ArgumentList $intMac, $extMac

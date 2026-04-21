@@ -242,6 +242,12 @@ Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
 
     Write-Host "Network configured: $IP/$Prefix  GW=$Gateway  DNS=$DNS"
 
+    # Open WinRM firewall to Any so the host can reach this VM regardless of
+    # which subnet it is on. Default is LocalSubnet which blocks cross-subnet
+    # connections from the Hyper-V host.
+    Set-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" `
+        -RemoteAddress Any -ErrorAction SilentlyContinue
+
     # Register a startup task to reapply the IP on reboot until a role makes
     # it permanent. Uses the same 169.254 detection approach.
     $taskScript = @"
