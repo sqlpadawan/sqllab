@@ -108,4 +108,11 @@ if (-not $hostVnic) {
     }
 }
 
+# Wait for vSwitch NIC bindings to fully initialize before returning.
+# On hosts using Wi-Fi adapters for the external switch this can take several
+# seconds and Hyper-V will return 000000000000 MACs for new VMs if we proceed
+# too quickly.
+Write-Host "Waiting for vSwitch initialization..."
+Start-Sleep -Seconds 15
+
 Write-Host "`nHost setup complete."

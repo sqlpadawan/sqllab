@@ -65,20 +65,15 @@ if ($VMDef.NICs -eq 2) {
     Write-Host "[$($VMDef.Name)] Added external NIC."
 }
 
-# Poll until Hyper-V assigns a real MAC to the internal NIC (index 0).
-# Immediately after New-VM the MAC can briefly be 000000000000 - wait for it.
-Write-Host "[$($VMDef.Name)] Waiting for MAC address assignment..."
-$rawMac = $null
-$macDeadline = (Get-Date).AddSeconds(30)
-while ((Get-Date) -lt $macDeadline) {
-    $rawMac = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress
-    if ($rawMac -and $rawMac -ne '000000000000') { break }
-    Start-Sleep -Seconds 2
-}
-if (-not $rawMac -or $rawMac -eq '000000000000') {
-    Write-Error "[$($VMDef.Name)] Hyper-V did not assign a MAC address within 30 seconds."
-    return
-}
+# Assign a static MAC address within the Hyper-V pool range (00-15-5D-xx-xx-xx).
+# Dynamic assignment is unreliable on some hosts - static is more robust.
+# Use the last two octets of the VM IP to generate a unique MAC per VM.
+$ipOctets  = $VMDef.IP -split '\.'
+$macSuffix = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], [int]$ipOctets[3]
+$staticMac = "00155D$macSuffix"
+Write-Host "[$($VMDef.Name)] Assigning static MAC: $staticMac"
+Set-VMNetworkAdapter -VM $vm -StaticMacAddress $staticMac
+$rawMac       = $staticMac
 $formattedMac = $rawMac -replace '(..(?!$))', '$1-'
 Write-Host "[$($VMDef.Name)] Internal NIC MAC: $formattedMac"
 
