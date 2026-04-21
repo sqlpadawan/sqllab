@@ -59,7 +59,20 @@ $extSwitch = Get-VMSwitch -Name $config.vSwitchExternal -ErrorAction SilentlyCon
 if ($extSwitch) {
     Write-Host "Exists: vSwitch $($config.vSwitchExternal)"
 } else {
-    $hostNIC = (Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1).Name
+    # Wait up to 30 seconds for a physical adapter to come Up - Ethernet can
+    # take a moment to initialize after a fresh teardown or host boot.
+    Write-Host "Waiting for a physical network adapter..."
+    $hostNIC = $null
+    $nicDeadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $nicDeadline) {
+        $hostNIC = (Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1).Name
+        if ($hostNIC) { break }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $hostNIC) {
+        throw "No physical network adapter is Up. Connect an Ethernet cable or ensure Wi-Fi is connected before running setup."
+    }
+    Write-Host "Using adapter: $hostNIC"
     if ($PSCmdlet.ShouldProcess($config.vSwitchExternal, "Create external vSwitch on $hostNIC")) {
         New-VMSwitch -Name $config.vSwitchExternal -NetAdapterName $hostNIC -AllowManagementOS $true
         Write-Host "Created external vSwitch: $($config.vSwitchExternal)"

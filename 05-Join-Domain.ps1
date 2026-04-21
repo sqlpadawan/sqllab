@@ -15,8 +15,11 @@ $domainCred = New-Object PSCredential(
                  "$($Config.DomainNetBIOS)\Administrator",
                  (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
-Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP)..."
-$deadline = (Get-Date).AddMinutes(15)
+# DC-B VMs (192.168.10.x) route through RRAS which was just configured.
+# Allow extra time for routing to stabilize before giving up.
+$winrmTimeout = if ($VMDef.IP -like '192.168.*') { 20 } else { 15 }
+Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP) (timeout: $winrmTimeout min)..."
+$deadline = (Get-Date).AddMinutes($winrmTimeout)
 $wmReady  = $false
 while ((Get-Date) -lt $deadline) {
     if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
@@ -26,7 +29,8 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 15
 }
 if (-not $wmReady) {
-    throw "[$($VMDef.Name)] WinRM did not respond within 15 minutes."
+    Write-Warning "[$($VMDef.Name)] WinRM did not respond within $winrmTimeout minutes - skipping domain join."
+    return
 }
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $localCred -ScriptBlock {
