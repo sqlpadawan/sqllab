@@ -44,21 +44,30 @@ UPDATEENABLED                = False
 IACCEPTROPENLICENSETERMS     = True
 "@
 
+# Copy the ISO from the host to the VM using the VM's admin share (C$).
+# Map a temporary PSDrive with domain credentials so Copy-Item can write to the VM.
+$localISO  = "C:\Windows\Temp\SQLServer.iso"
+$vmAdminShare = "\\$($VMDef.IP)\C`$"
+
+Write-Host "[$($VMDef.Name)] Mapping VM admin share..."
+New-PSDrive -Name 'VMDrive' -PSProvider FileSystem `
+    -Root $vmAdminShare -Credential $domainCred -ErrorAction Stop | Out-Null
+
+$vmISODest = "VMDrive:\Windows\Temp\SQLServer.iso"
+if (-not (Test-Path $vmISODest)) {
+    Write-Host "[$($VMDef.Name)] Copying SQL Server ISO to VM (this may take a few minutes)..."
+    Copy-Item -Path $SQLISOPath -Destination $vmISODest -Force
+    Write-Host "[$($VMDef.Name)] ISO copy complete."
+} else {
+    Write-Host "[$($VMDef.Name)] ISO already present on VM."
+}
+Remove-PSDrive -Name 'VMDrive' -Force
+
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     param($ISOPath, $IniContent)
 
-    # Copy ISO from host share to local temp path so Mount-DiskImage works.
-    # The $ISOPath argument is a host path - map it via the admin share.
-    $localISO = "C:\Windows\Temp\SQLServer.iso"
-    if (-not (Test-Path $localISO)) {
-        Write-Host "Copying SQL Server ISO to VM (this may take a few minutes)..."
-        Copy-Item -Path $ISOPath -Destination $localISO -Force
-    } else {
-        Write-Host "ISO already present at $localISO"
-    }
-
     Write-Host "Mounting SQL Server ISO..."
-    $mount = Mount-DiskImage -ImagePath $localISO -PassThru
+    $mount = Mount-DiskImage -ImagePath $ISOPath -PassThru
     $drive = ($mount | Get-Volume).DriveLetter
     $setup = "${drive}:\setup.exe"
 
@@ -90,4 +99,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
     Write-Host "SQL Server installation complete."
 
-} -ArgumentList $SQLISOPath, $configIni
+} -ArgumentList $localISO, $configIni
