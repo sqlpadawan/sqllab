@@ -141,7 +141,7 @@ $mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
 $driveLetter  = $mountedVhd.DriveLetter
 $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
 New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
-$unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
+[System.IO.File]::WriteAllText($unattendPath, $unattendXml, [System.Text.UTF8Encoding]::new($false))
 Dismount-VHD $diffVhdx
 
 Start-VM -VM $vm
