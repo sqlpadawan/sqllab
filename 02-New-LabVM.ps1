@@ -189,28 +189,41 @@ if (-not $booted) {
 
 Write-Host "[$($VMDef.Name)] VM is up. Configuring network via PowerShell Direct..."
 
-# Apply static IP, gateway, and DNS by finding the internal NIC via its MAC.
-# Also register a startup scheduled task so the IP persists across reboots
-# until a role (AD DS, domain join) makes it permanent.
+# Apply static IP, gateway, and DNS via PowerShell Direct.
+# Find the internal NIC by looking for a link-local 169.254.x.x address -
+# this is always the unconfigured internal NIC regardless of MAC format or
+# adapter naming. No MAC matching needed.
 $vmIP      = $VMDef.IP
 $vmPrefix  = $VMDef.PrefixLen
 $vmGateway = $VMDef.Gateway
 $vmDNS     = $VMDef.DNS
-$mac       = $formattedMac
 
 Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
-    param($MAC, $IP, $Prefix, $Gateway, $DNS)
+    param($IP, $Prefix, $Gateway, $DNS)
 
-    $nic = Get-NetAdapter | Where-Object { $_.MacAddress -eq $MAC } | Select-Object -First 1
+    # Find the NIC with a link-local address - that is always the unconfigured
+    # internal NIC. This avoids all MAC format matching issues entirely.
+    $nic = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } |
+        Where-Object {
+            (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 `
+                -ErrorAction SilentlyContinue).IPAddress -like '169.254.*'
+        } | Select-Object -First 1
+
     if (-not $nic) {
-        Write-Warning "NIC with MAC $MAC not found - adapter list:"
-        Get-NetAdapter | Select-Object Name, MacAddress
+        # Fallback: just take the first physical Up adapter
+        $nic = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } |
+            Select-Object -First 1
+    }
+
+    if (-not $nic) {
+        Write-Warning "No suitable NIC found. Adapter list:"
+        Get-NetAdapter | Select-Object Name, Status, MacAddress
         return
     }
 
-    Write-Host "Configuring NIC: $($nic.Name) ($MAC)"
+    Write-Host "Configuring NIC: $($nic.Name)"
 
-    # Remove any existing IP on this adapter before assigning the static one
+    # Remove any existing non-wellknown IP before assigning static
     Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 `
         -ErrorAction SilentlyContinue |
         Where-Object { $_.PrefixOrigin -ne 'WellKnown' } |
@@ -230,20 +243,24 @@ Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
     Write-Host "Network configured: $IP/$Prefix  GW=$Gateway  DNS=$DNS"
 
     # Register a startup task to reapply the IP on reboot until a role makes
-    # it permanent. The task checks first and skips if the IP is already set.
+    # it permanent. Uses the same 169.254 detection approach.
     $taskScript = @"
-`$nic = Get-NetAdapter | Where-Object { `$_.MacAddress -eq '$MAC' } | Select-Object -First 1
-if (`$nic) {
-    `$existing = Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { `$_.IPAddress -eq '$IP' }
-    if (-not `$existing) {
-        Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-            Where-Object { `$_.PrefixOrigin -ne 'WellKnown' } |
-            Remove-NetIPAddress -Confirm:`$false -ErrorAction SilentlyContinue
-        New-NetIPAddress -InterfaceIndex `$nic.ifIndex -IPAddress '$IP' -PrefixLength $Prefix -ErrorAction SilentlyContinue
-        $(if ($Gateway) { "New-NetRoute -InterfaceIndex `$nic.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop '$Gateway' -ErrorAction SilentlyContinue" })
-        Set-DnsClientServerAddress -InterfaceIndex `$nic.ifIndex -ServerAddresses '$DNS'
-    }
+`$nic = Get-NetAdapter -Physical | Where-Object { `$_.Status -eq 'Up' } |
+    Where-Object {
+        (Get-NetIPAddress -InterfaceIndex `$_.ifIndex -AddressFamily IPv4 ``
+            -ErrorAction SilentlyContinue).IPAddress -like '169.254.*'
+    } | Select-Object -First 1
+if (-not `$nic) { exit 0 }
+`$existing = Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 ``
+    -ErrorAction SilentlyContinue | Where-Object { `$_.IPAddress -eq '$IP' }
+if (-not `$existing) {
+    Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 ``
+        -ErrorAction SilentlyContinue |
+        Where-Object { `$_.PrefixOrigin -ne 'WellKnown' } |
+        Remove-NetIPAddress -Confirm:`$false -ErrorAction SilentlyContinue
+    New-NetIPAddress -InterfaceIndex `$nic.ifIndex -IPAddress '$IP' -PrefixLength $Prefix -ErrorAction SilentlyContinue
+    $(if ($Gateway) { "New-NetRoute -InterfaceIndex `$nic.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop '$Gateway' -ErrorAction SilentlyContinue" })
+    Set-DnsClientServerAddress -InterfaceIndex `$nic.ifIndex -ServerAddresses '$DNS'
 }
 "@
     $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskScript))
@@ -256,7 +273,7 @@ if (`$nic) {
         -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Write-Host "Startup task registered."
 
-} -ArgumentList $mac, $vmIP, $vmPrefix, $vmGateway, $vmDNS
+} -ArgumentList $vmIP, $vmPrefix, $vmGateway, $vmDNS
 
 # Only poll WinRM for VMs the host can reach directly (172.16.10.x subnet).
 # VMs on 192.168.10.x route through RRAS which isn't configured until stage 4,
