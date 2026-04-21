@@ -33,9 +33,8 @@ if ($PSCmdlet.ShouldProcess($diffVhdx, "Create differencing VHDX")) {
     Write-Host "[$($VMDef.Name)] Disk resized to $diskSizeGB GB."
 }
 
-# Create the VM before building unattend.xml so we can read the MAC address
-# Hyper-V assigns to the internal NIC. We use it in the first-boot script to
-# find the right adapter regardless of how Windows names it.
+# Create the VM before injecting unattend.xml so we can read the MAC address
+# Hyper-V assigns to the internal NIC.
 Write-Host "[$($VMDef.Name)] Creating VM..."
 if (-not $PSCmdlet.ShouldProcess($VMDef.Name, "New-VM")) { return }
 
@@ -59,86 +58,23 @@ Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
 Set-VMFirmware -VM $vm -EnableSecureBoot Off
 
 # DC needs a second NIC on the external switch for NAT/internet.
-# Add it before reading MACs so both adapters are present.
 if ($VMDef.NICs -eq 2) {
     Add-VMNetworkAdapter -VM $vm -SwitchName $Config.vSwitchExternal
     Write-Host "[$($VMDef.Name)] Added external NIC."
 }
 
 # Read the MAC Hyper-V assigned to the internal NIC (always index 0).
-# Format: Hyper-V gives "AABBCCDDEEFF", PowerShell Get-NetAdapter uses "AA-BB-CC-DD-EE-FF".
-$rawMac      = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress
+# Hyper-V format: "AABBCCDDEEFF" -> Get-NetAdapter format: "AA-BB-CC-DD-EE-FF"
+$rawMac       = (Get-VMNetworkAdapter -VM $vm)[0].MacAddress
 $formattedMac = $rawMac -replace '(..(?!$))', '$1-'
 Write-Host "[$($VMDef.Name)] Internal NIC MAC: $formattedMac"
 
-# Build the IP configuration script that will run on first boot.
-# It finds the NIC by MAC address so adapter naming doesn't matter.
-$gateway    = if ($VMDef.Gateway) { $VMDef.Gateway } else { '' }
-$gatewayCmd = if ($VMDef.Gateway) {
-    "netsh interface ipv4 add route 0.0.0.0/0 name=`$nicName nexthop=$($VMDef.Gateway) store=persistent"
-} else { '' }
-
-$netScript = @"
-`$mac    = '$formattedMac'
-`$nic    = Get-NetAdapter | Where-Object { `$_.MacAddress -eq `$mac } | Select-Object -First 1
-if (-not `$nic) { exit 1 }
-`$nicName = `$nic.Name
-netsh interface ipv4 set address name="`$nicName" static $($VMDef.IP) 255.255.255.0 $gateway
-netsh interface ipv4 set dns    name="`$nicName" static $($VMDef.DNS) primary
-$gatewayCmd
-# Remove this scheduled task after it has run once
-Unregister-ScheduledTask -TaskName 'LabNetConfig' -Confirm:`$false
-"@
-
-$netScriptBytes   = [System.Text.Encoding]::Unicode.GetBytes($netScript)
-$netScriptEncoded = [Convert]::ToBase64String($netScriptBytes)
-
-# This scheduled task XML runs the IP config script at system startup,
-# before any user logs on, with SYSTEM privileges.
-# Trigger: AtStartup with a 30-second delay to ensure NICs are ready.
-# The script unregisters the task after it runs so it only fires once.
-$taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <BootTrigger>
-      <Delay>PT30S</Delay>
-      <Enabled>true</Enabled>
-    </BootTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
-    <Enabled>true</Enabled>
-  </Settings>
-  <Actions>
-    <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NonInteractive -WindowStyle Hidden -EncodedCommand $netScriptEncoded</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-
 $localAdminPass = Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault -AsPlainText
 
-Write-Host "[$($VMDef.Name)] Injecting unattend.xml and first-boot network task..."
-
-$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
-    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
-$driveLetter = $mountedVhd.DriveLetter
-
-# Inject the unattend.xml - kept minimal: hostname, timezone, and password only.
-# Networking is handled entirely by the scheduled task above to avoid the
-# unreliable Identifier-based TCPIP component in Windows Server 2025.
+# Minimal unattend.xml - hostname, timezone, and password only.
+# Networking is applied via PowerShell Direct after first boot (below),
+# which is reliable regardless of how Windows names the adapters.
+Write-Host "[$($VMDef.Name)] Injecting unattend.xml..."
 $unattendXml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -187,24 +123,113 @@ $unattendXml = @"
 </unattend>
 "@
 
+$mountedVhd  = Mount-VHD $diffVhdx -PassThru | Get-Disk | Get-Partition |
+    Where-Object { $_.Type -eq 'Basic' } | Get-Volume
+$driveLetter  = $mountedVhd.DriveLetter
 $unattendPath = "${driveLetter}:\Windows\Panther\unattend.xml"
 New-Item -Path (Split-Path $unattendPath) -ItemType Directory -Force | Out-Null
 $unattendXml | Out-File -FilePath $unattendPath -Encoding utf8
-
-# Drop the scheduled task XML into the offline VHDX so it is registered
-# before the OS ever boots. Task Scheduler picks up XML files placed in
-# %SystemRoot%\System32\Tasks automatically on first boot.
-$taskDir  = "${driveLetter}:\Windows\System32\Tasks"
-New-Item -Path $taskDir -ItemType Directory -Force | Out-Null
-$taskXml | Out-File -FilePath "$taskDir\LabNetConfig" -Encoding unicode
-
 Dismount-VHD $diffVhdx
 
 Start-VM -VM $vm
-Write-Host "[$($VMDef.Name)] VM started. Waiting for WinRM on $($VMDef.IP)..."
+Write-Host "[$($VMDef.Name)] VM started. Waiting for first boot via PowerShell Direct..."
 
-# Allow extra time for first boot (sysprep + scheduled task 30s delay)
+# PowerShell Direct connects over the Hyper-V bus - no network needed.
+# Poll until the VM accepts credentials, which means OOBE is complete.
+$localCred = New-Object PSCredential("Administrator",
+    (Get-Secret -Name 'LocalAdminPass' -Vault $Config.SecretsVault))
+
 $deadline = (Get-Date).AddMinutes(20)
+$booted   = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        Invoke-Command -VMName $VMDef.Name -Credential $localCred `
+            -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop | Out-Null
+        $booted = $true
+        break
+    } catch {
+        Start-Sleep -Seconds 15
+    }
+}
+
+if (-not $booted) {
+    Write-Error "[$($VMDef.Name)] VM did not become available via PowerShell Direct within 20 minutes."
+    return
+}
+
+Write-Host "[$($VMDef.Name)] VM is up. Configuring network via PowerShell Direct..."
+
+# Apply static IP, gateway, and DNS by finding the internal NIC via its MAC.
+# Also register a startup scheduled task so the IP persists across reboots
+# until a role (AD DS, domain join) makes it permanent.
+$vmIP      = $VMDef.IP
+$vmPrefix  = $VMDef.PrefixLen
+$vmGateway = $VMDef.Gateway
+$vmDNS     = $VMDef.DNS
+$mac       = $formattedMac
+
+Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
+    param($MAC, $IP, $Prefix, $Gateway, $DNS)
+
+    $nic = Get-NetAdapter | Where-Object { $_.MacAddress -eq $MAC } | Select-Object -First 1
+    if (-not $nic) {
+        Write-Warning "NIC with MAC $MAC not found - adapter list:"
+        Get-NetAdapter | Select-Object Name, MacAddress
+        return
+    }
+
+    Write-Host "Configuring NIC: $($nic.Name) ($MAC)"
+
+    # Remove any existing IP on this adapter before assigning the static one
+    Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 `
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.PrefixOrigin -ne 'WellKnown' } |
+        Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+
+    New-NetIPAddress -InterfaceIndex $nic.ifIndex `
+                     -IPAddress $IP -PrefixLength $Prefix | Out-Null
+
+    if ($Gateway) {
+        New-NetRoute -InterfaceIndex $nic.ifIndex `
+                     -DestinationPrefix '0.0.0.0/0' `
+                     -NextHop $Gateway -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ServerAddresses $DNS
+
+    Write-Host "Network configured: $IP/$Prefix  GW=$Gateway  DNS=$DNS"
+
+    # Register a startup task to reapply the IP on reboot until a role makes
+    # it permanent. The task checks first and skips if the IP is already set.
+    $taskScript = @"
+`$nic = Get-NetAdapter | Where-Object { `$_.MacAddress -eq '$MAC' } | Select-Object -First 1
+if (`$nic) {
+    `$existing = Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { `$_.IPAddress -eq '$IP' }
+    if (-not `$existing) {
+        Get-NetIPAddress -InterfaceIndex `$nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { `$_.PrefixOrigin -ne 'WellKnown' } |
+            Remove-NetIPAddress -Confirm:`$false -ErrorAction SilentlyContinue
+        New-NetIPAddress -InterfaceIndex `$nic.ifIndex -IPAddress '$IP' -PrefixLength $Prefix -ErrorAction SilentlyContinue
+        $(if ($Gateway) { "New-NetRoute -InterfaceIndex `$nic.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop '$Gateway' -ErrorAction SilentlyContinue" })
+        Set-DnsClientServerAddress -InterfaceIndex `$nic.ifIndex -ServerAddresses '$DNS'
+    }
+}
+"@
+    $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskScript))
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                     -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
+    $trigger   = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    Register-ScheduledTask -TaskName 'LabNetConfig' -Action $action `
+        -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Write-Host "Startup task registered."
+
+} -ArgumentList $mac, $vmIP, $vmPrefix, $vmGateway, $vmDNS
+
+Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP)..."
+$deadline = (Get-Date).AddMinutes(10)
 while ((Get-Date) -lt $deadline) {
     if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
         Write-Host "[$($VMDef.Name)] WinRM is up."
