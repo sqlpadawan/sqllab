@@ -13,8 +13,18 @@ $cred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
+# Read the MACs from Hyper-V on the host so NIC identification inside the VM
+# is reliable regardless of adapter naming or IP state at the time of the call.
+$adapters    = Get-VMNetworkAdapter -VMName $VMDef.Name
+$intMac      = ($adapters | Where-Object { $_.SwitchName -eq $Config.vSwitchInternal } |
+                Select-Object -First 1).MacAddress -replace '(..(?!$))', '$1-'
+$extMac      = ($adapters | Where-Object { $_.SwitchName -eq $Config.vSwitchExternal } |
+                Select-Object -First 1).MacAddress -replace '(..(?!$))', '$1-'
+
+Write-Host "[$($VMDef.Name)] Internal MAC: $intMac  External MAC: $extMac"
+
 Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
-    param($ExtNIC, $IntNIC)
+    param($IntMac, $ExtMac)
 
     Write-Host "Installing RRAS and Routing..."
     Install-WindowsFeature RemoteAccess, Routing, RSAT-RemoteAccess-PowerShell `
@@ -23,16 +33,12 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
     Write-Host "Starting RRAS service..."
     Install-RemoteAccess -VpnType RoutingOnly
 
-    Write-Host "Identifying NICs..."
-    $ext = Get-NetAdapter | Where-Object {
-        (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue).IPAddress -notlike '172.16.*'
-    } | Select-Object -First 1
+    Write-Host "Identifying NICs by MAC address..."
+    $int = Get-NetAdapter | Where-Object { $_.MacAddress -eq $IntMac } | Select-Object -First 1
+    $ext = Get-NetAdapter | Where-Object { $_.MacAddress -eq $ExtMac } | Select-Object -First 1
 
-    $int = Get-NetAdapter | Where-Object {
-        (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue).IPAddress -like '172.16.*'
-    } | Select-Object -First 1
+    if (-not $int) { throw "Internal NIC with MAC $IntMac not found." }
+    if (-not $ext) { throw "External NIC with MAC $ExtMac not found." }
 
     Write-Host "External NIC: $($ext.Name)  Internal NIC: $($int.Name)"
 
@@ -53,4 +59,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
 
     Write-Host "RRAS configuration complete."
 
-} -ArgumentList $Config.DCExternalNIC, $Config.DCInternalNIC
+} -ArgumentList $intMac, $extMac

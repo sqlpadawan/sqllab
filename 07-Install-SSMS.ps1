@@ -15,6 +15,22 @@ $domainCred = New-Object PSCredential(
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
+    Write-Host "Checking internet connectivity..."
+    $connected = $false
+    $deadline  = (Get-Date).AddMinutes(5)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-NetConnection -ComputerName "aka.ms" -Port 443 -InformationLevel Quiet `
+                -ErrorAction SilentlyContinue -WarningAction SilentlyContinue) {
+            $connected = $true
+            break
+        }
+        Write-Host "Waiting for internet access via RRAS... retrying in 15s"
+        Start-Sleep -Seconds 15
+    }
+    if (-not $connected) {
+        throw "No internet access after 5 minutes. Verify RRAS NAT is running on sqllabdc01."
+    }
+
     $ssmsUrl = "https://aka.ms/ssmsfullsetup"
     $dest    = "C:\Windows\Temp\SSMS-Setup.exe"
 

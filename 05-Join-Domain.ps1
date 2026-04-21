@@ -17,25 +17,44 @@ $domainCred = New-Object PSCredential(
 
 Write-Host "[$($VMDef.Name)] Waiting for WinRM on $($VMDef.IP)..."
 $deadline = (Get-Date).AddMinutes(15)
+$wmReady  = $false
 while ((Get-Date) -lt $deadline) {
-    if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) { break }
+    if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
+        $wmReady = $true
+        break
+    }
     Start-Sleep -Seconds 15
+}
+if (-not $wmReady) {
+    throw "[$($VMDef.Name)] WinRM did not respond within 15 minutes."
 }
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $localCred -ScriptBlock {
-    param($Domain, $DomainCred)
+    param($Domain, $DomainCred, $OUPath)
 
     Write-Host "Joining domain: $Domain"
-    Add-Computer -DomainName $Domain `
-                 -Credential $DomainCred `
-                 -OUPath "OU=LabServers,DC=sqllab,DC=local" `
-                 -Restart:$false `
-                 -Force
+    try {
+        Add-Computer -DomainName $Domain `
+                     -Credential $DomainCred `
+                     -OUPath $OUPath `
+                     -Restart:$false `
+                     -Force `
+                     -ErrorAction Stop
+    } catch {
+        # OU may not exist yet - fall back to default computers container
+        Write-Warning "Join with OUPath failed: $_"
+        Write-Warning "Retrying without OUPath (default Computers container)..."
+        Add-Computer -DomainName $Domain `
+                     -Credential $DomainCred `
+                     -Restart:$false `
+                     -Force `
+                     -ErrorAction Stop
+    }
 
     Write-Host "Restarting..."
     Restart-Computer -Force
 
-} -ArgumentList $Config.DomainFQDN, $domainCred
+} -ArgumentList $Config.DomainFQDN, $domainCred, "OU=LabServers,DC=$($Config.DomainFQDN.Replace('.',',DC='))"
 
 Write-Host "[$($VMDef.Name)] Waiting for rejoin..."
 Start-Sleep -Seconds 45

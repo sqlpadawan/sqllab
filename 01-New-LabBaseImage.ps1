@@ -1,10 +1,26 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][string]$ISOPath,
+    [string]$ISOPath,
     [Parameter(Mandatory)][string]$OutputVhdx,
+    [string]$ConfigPath = ".\config.json",
     [int]   $SizeGB  = 64,
     [string]$Edition = "Windows Server 2025 Datacenter Evaluation (Desktop Experience)"
 )
+
+# Resolve ISOPath from config.json if not passed explicitly
+if (-not $ISOPath) {
+    if (-not (Test-Path $ConfigPath)) {
+        throw "ISOPath not specified and config.json not found at '$ConfigPath'."
+    }
+    $ISOPath = (Get-Content $ConfigPath | ConvertFrom-Json).WS2025ISOPath
+    if (-not $ISOPath) {
+        throw "ISOPath not specified and WS2025ISOPath not set in config.json."
+    }
+    Write-Host "ISOPath from config.json: $ISOPath"
+}
+if (-not (Test-Path $ISOPath)) {
+    throw "ISO not found: '$ISOPath'"
+}
 
 if (Test-Path $OutputVhdx) {
     Write-Warning "Gold VHDX already exists at $OutputVhdx. Delete it first to rebuild."
@@ -43,9 +59,9 @@ if ($PSCmdlet.ShouldProcess($OutputVhdx, "Create gold VHDX")) {
         $disk = Mount-VHD -Path $OutputVhdx -PassThru | Get-Disk
 
         # Build correct GPT layout for UEFI boot:
-        #   Partition 1 — EFI System Partition (ESP), 100 MB, FAT32
-        #   Partition 2 — MSR, 16 MB (required by Windows GPT spec, no drive letter)
-        #   Partition 3 — Windows, remainder, NTFS
+        #   Partition 1 - EFI System Partition (ESP), 100 MB, FAT32
+        #   Partition 2 - MSR, 16 MB (required by Windows GPT spec, no drive letter)
+        #   Partition 3 - Windows, remainder, NTFS
         Write-Host "Partitioning disk (ESP + MSR + Windows)..."
         Initialize-Disk -Number $disk.Number -PartitionStyle GPT -PassThru | Out-Null
 
@@ -56,7 +72,7 @@ if ($PSCmdlet.ShouldProcess($OutputVhdx, "Create gold VHDX")) {
         Format-Volume -DriveLetter $espLetter -FileSystem FAT32 `
                       -NewFileSystemLabel "EFI" -Confirm:$false | Out-Null
 
-        # MSR — no drive letter, required by GPT spec
+        # MSR - no drive letter, required by GPT spec
         New-Partition -DiskNumber $disk.Number -Size 16MB `
                       -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' | Out-Null
 

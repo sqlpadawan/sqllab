@@ -23,7 +23,7 @@ ACTION                       = Install
 QUIET                        = True
 QUIETSIMPLE                  = False
 IACCEPTSQLSERVERLICENSETERMS = True
-FEATURES                     = SQLENGINE,CONN,SSMS
+FEATURES                     = SQLENGINE,CONN
 INSTANCENAME                 = MSSQLSERVER
 INSTANCEID                   = MSSQLSERVER
 SQLSVCACCOUNT                = "$saSvcAcct"
@@ -47,8 +47,18 @@ IACCEPTROPENLICENSETERMS     = True
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     param($ISOPath, $IniContent)
 
+    # Copy ISO from host share to local temp path so Mount-DiskImage works.
+    # The $ISOPath argument is a host path - map it via the admin share.
+    $localISO = "C:\Windows\Temp\SQLServer.iso"
+    if (-not (Test-Path $localISO)) {
+        Write-Host "Copying SQL Server ISO to VM (this may take a few minutes)..."
+        Copy-Item -Path $ISOPath -Destination $localISO -Force
+    } else {
+        Write-Host "ISO already present at $localISO"
+    }
+
     Write-Host "Mounting SQL Server ISO..."
-    $mount = Mount-DiskImage -ImagePath $ISOPath -PassThru
+    $mount = Mount-DiskImage -ImagePath $localISO -PassThru
     $drive = ($mount | Get-Volume).DriveLetter
     $setup = "${drive}:\setup.exe"
 
@@ -70,7 +80,8 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         throw "SQL setup failed with exit code $($result.ExitCode). Check C:\Program Files\Microsoft SQL Server\*\Setup Bootstrap\Log\"
     }
 
-    Dismount-DiskImage -ImagePath $ISOPath | Out-Null
+    Dismount-DiskImage -ImagePath $localISO | Out-Null
+    Remove-Item $localISO -Force -ErrorAction SilentlyContinue
 
     Write-Host "Configuring SQL Server firewall rule..."
     New-NetFirewallRule -DisplayName "SQL Server Default Instance" `

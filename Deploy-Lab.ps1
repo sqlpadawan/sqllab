@@ -19,7 +19,7 @@ $config = Get-Content $ConfigPath | ConvertFrom-Json
 $roles  = Get-Content $RolesPath  | ConvertFrom-Json
 
 # Resolve ISO paths: CLI parameter wins; fall back to config.json
-if (-not $SQLISOPath) { $SQLISOPath = $config.SQLISOPath   }
+if (-not $SQLISOPath) { $SQLISOPath = $config.SQLISOPath    }
 if (-not $WS2025ISO)  { $WS2025ISO  = $config.WS2025ISOPath }
 
 # Validate ISO paths exist before doing any real work
@@ -47,6 +47,34 @@ foreach ($s in $requiredSecrets) {
     }
 }
 
+# Step 0b - run host setup to ensure vSwitches and host vNIC IP are in place.
+# This is idempotent - safe to run even if setup was done previously.
+Write-Host "`n[0/6] Running host setup..." -ForegroundColor Cyan
+.\00-Setup-LabFolders.ps1 -WhatIf:$WhatIfPreference
+
+# Ensure WinRM is running and TrustedHosts covers all lab IPs.
+# Done before VM provisioning so PowerShell Direct and WSMan polling both work.
+Write-Host "`nConfiguring WinRM TrustedHosts..." -ForegroundColor Cyan
+$winrm = Get-Service -Name WinRM
+if ($winrm.Status -ne 'Running') {
+    Write-Host "Starting WinRM service on host..."
+    Start-Service WinRM
+    Set-Service WinRM -StartupType Automatic
+}
+$labIPs       = ($roles.IP) -join ','
+$currentHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
+if ($currentHosts -notmatch [regex]::Escape($labIPs)) {
+    $newHosts = if ($currentHosts -and $currentHosts -ne '*') {
+        "$currentHosts,$labIPs"
+    } else {
+        $labIPs
+    }
+    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newHosts -Force
+    Write-Host "TrustedHosts updated: $newHosts"
+} else {
+    Write-Host "TrustedHosts already contains lab IPs."
+}
+
 # Step 1 - build gold image
 if (-not $SkipBaseImage) {
     Write-Host "`n[1/6] Building gold VHDX image..." -ForegroundColor Cyan
@@ -69,30 +97,6 @@ if ($WhatIfPreference) {
     Write-Host "`n[WhatIf] Stages 3-6 skipped - no VMs were created." -ForegroundColor Yellow
     Write-Host "Re-run without -WhatIf to perform the full deployment."
     return
-}
-
-# Ensure WinRM is running on the host - required before WSMan:\ drive is usable
-Write-Host "`nConfiguring WinRM TrustedHosts..." -ForegroundColor Cyan
-$winrm = Get-Service -Name WinRM
-if ($winrm.Status -ne 'Running') {
-    Write-Host "Starting WinRM service on host..."
-    Start-Service WinRM
-    Set-Service  WinRM -StartupType Automatic
-}
-
-# Add lab VM IPs to WinRM TrustedHosts so PSRemoting works from a non-domain host
-$labIPs       = ($roles.IP) -join ','
-$currentHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
-if ($currentHosts -notmatch [regex]::Escape($labIPs)) {
-    $newHosts = if ($currentHosts -and $currentHosts -ne '*') {
-        "$currentHosts,$labIPs"
-    } else {
-        $labIPs
-    }
-    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newHosts -Force
-    Write-Host "TrustedHosts updated: $newHosts"
-} else {
-    Write-Host "TrustedHosts already contains lab IPs."
 }
 
 # Step 3 - promote DC
