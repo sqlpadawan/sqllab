@@ -34,11 +34,18 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     # SSMS 22 uses the Visual Studio Installer bootstrapper model.
     # The bootstrapper (vs_SSMS.exe) downloads and installs SSMS via the
     # Visual Studio Installer - there is no longer a standalone MSI.
-    $ssmsUrl = "https://aka.ms/vs/17/release/vs_ssms.exe"
+    $ssmsUrl = "https://aka.ms/ssms/22/release/vs_SSMS.exe"
     $dest    = "C:\Windows\Temp\vs_SSMS.exe"
 
     Write-Host "Downloading SSMS 22 bootstrapper..."
     Invoke-WebRequest -Uri $ssmsUrl -OutFile $dest -UseBasicParsing
+
+    # Verify download succeeded and file is not empty/corrupted
+    $fileSize = (Get-Item $dest).Length
+    if ($fileSize -lt 1MB) {
+        throw "SSMS bootstrapper download appears incomplete (size: $fileSize bytes). Check internet connectivity."
+    }
+    Write-Host "Bootstrapper downloaded ($([math]::Round($fileSize/1MB,1)) MB)."
 
     # Silent install flags for Visual Studio Installer bootstrapper:
     #   --quiet        - no UI
