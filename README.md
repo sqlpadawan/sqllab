@@ -160,9 +160,13 @@ Write-Host "`nAll secrets stored in SqlLabVault. Run 'Unlock-SecretVault -Name S
 
 ---
 
-### Step 2 - Host setup
+### Step 2 - First-time host setup
 
-Run from an elevated PowerShell prompt on the Hyper-V host.
+> **Skip this step if Hyper-V is already enabled on your host.** `Deploy-Lab.ps1`
+> runs `00-Setup-LabFolders.ps1` automatically as its first action, so on a host
+> where Hyper-V is already enabled you can go straight to Step 3.
+
+If this is a fresh host with Hyper-V not yet enabled, run this first:
 
 ```powershell
 .\00-Setup-LabFolders.ps1
@@ -170,11 +174,15 @@ Run from an elevated PowerShell prompt on the Hyper-V host.
 
 This script:
 - Creates `C:\HyperV\BaseImages`, `C:\HyperV\VMs`, and `C:\HyperV\Disks`
-- Enables the Hyper-V Windows feature if not already enabled (requires reboot)
+- Enables the Hyper-V Windows feature if not already enabled
 - Creates the `sqllab-external` and `sqllab-internal` virtual switches
+- Assigns `172.16.10.1/24` to the host vNIC on the internal switch
 - Installs the SecretManagement and SecretStore modules
 
-> **If Hyper-V was not already enabled**, reboot the host before continuing.
+> **If Hyper-V was not already enabled**, a reboot is required before continuing.
+> After rebooting, proceed to Step 3 - `Deploy-Lab.ps1` will re-run
+> `00-Setup-LabFolders.ps1` idempotently and create the switches before
+> provisioning any VMs.
 
 ---
 
@@ -196,6 +204,14 @@ override it for a one-off build, pass `-ISOPath` explicitly:
     -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
 ```
 
+> **Note:** `Deploy-Lab.ps1` enables Hyper-V automatically if it is not already
+> enabled, but requires a reboot before continuing. If prompted to reboot, do so
+> and re-run the deployment -- it will resume safely from the beginning.
+
+> **Note:** `Deploy-Lab.ps1` enables Hyper-V automatically if it is not already
+> enabled, but a reboot is required before the deployment can continue. If prompted
+> to reboot, do so and re-run - the deployment will resume safely.
+
 > Building each image takes 10-20 minutes depending on disk speed.
 
 ---
@@ -203,7 +219,8 @@ override it for a one-off build, pass `-ISOPath` explicitly:
 ### Step 4 - Full automated deployment
 
 Once the gold images exist, run the orchestrator to build the entire lab. ISO paths
-are read automatically from `config.json` - no parameters required:
+are read automatically from `config.json` - no parameters required. Host setup
+(vSwitches, host IP, WinRM) runs automatically as the first step:
 
 ```powershell
 .\Deploy-Lab.ps1
