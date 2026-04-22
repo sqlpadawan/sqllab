@@ -1,4 +1,4 @@
-# sqllab.local — Hyper-V Lab Build Instructions
+# sqllab.local - Hyper-V Lab Build Instructions
 
 A repeatable, scripted Windows domain lab with a domain controller, Windows Server 2025
 workstation, and four SQL Server instances spread across two simulated data centers.
@@ -64,9 +64,9 @@ wherever your ISOs actually live before running any scripts.
 
 | Item | Approximate size |
 |---|---|
-| WS2025 gold VHDX | 12–15 GB |
-| Per-VM differencing disk (all VMs, 64 GB) | 3–20 GB each |
-| Total (all 6 VMs + gold image) | ~75–110 GB |
+| WS2025 gold VHDX | 12-15 GB |
+| Per-VM differencing disk (all VMs, 64 GB) | 3-20 GB each |
+| Total (all 6 VMs + gold image) | ~75-110 GB |
 
 ### RAM
 
@@ -74,7 +74,7 @@ wherever your ISOs actually live before running any scripts.
 |---|---|
 | sqllabdc01 | 4 GB |
 | sqlwork01 | 8 GB |
-| sqlsrv01–04 | 4 GB each |
+| sqlsrv01-04 | 4 GB each |
 | **Total** | **28 GB** |
 
 ---
@@ -93,14 +93,18 @@ wherever your ISOs actually live before running any scripts.
 | `05-Join-Domain.ps1` | Joins a VM to sqllab.local and waits for rejoin |
 | `06-Install-SQL.ps1` | Unattended SQL Server install using a generated ini file |
 | `07-Install-SSMS.ps1` | Downloads and silently installs SSMS on sqlwork01 |
-| `Deploy-Lab.ps1` | Master orchestrator — calls all scripts in order |
+| `08-Install-VSCode.ps1` | Installs VS Code, disables AI features, installs extensions on sqlwork01 |
+| `09-Install-VisualStudio.ps1` | Installs Visual Studio Community (.NET desktop + SQL data tools) on sqlwork01 |
+| `10-Install-GitHub.ps1` | Installs GitHub Desktop, Git for Windows, and applies git config on sqlwork01 |
+| `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
+| `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
 | `Remove-Lab.ps1` | Tears down all VMs and disks cleanly |
 
 ---
 
 ## Step-by-step build
 
-### Step 1 — Seed the secret vault
+### Step 1 - Seed the secret vault
 
 Run this once on your Hyper-V host before anything else. Each `Set-Secret`
 call will prompt you to enter the password securely.
@@ -114,7 +118,7 @@ if (-not (Get-Module -ListAvailable Microsoft.PowerShell.SecretManagement)) {
 
 # Remove existing vault if present
 if (Get-SecretVault -Name SqlLabVault -ErrorAction SilentlyContinue) {
-    Write-Host "Vault 'SqlLabVault' already exists — removing it..."
+    Write-Host "Vault 'SqlLabVault' already exists - removing it..."
     Unregister-SecretVault -Name SqlLabVault
     # Also wipe the underlying store so stale secrets don't linger
     Reset-SecretStore -Force
@@ -125,7 +129,7 @@ if (Get-SecretVault -Name SqlLabVault -ErrorAction SilentlyContinue) {
 Register-SecretVault -Name SqlLabVault -ModuleName Microsoft.PowerShell.SecretStore -DefaultVault
 Write-Host "Vault 'SqlLabVault' registered. You will be prompted to set a master password."
 
-# Seed required secrets — each prompt shows the secret name
+# Seed required secrets - each prompt shows the secret name
 $secrets = [ordered]@{
     LocalAdminPass  = "Local Administrator password on each VM"
     DomainAdminPass = "SQLLAB\Administrator (after domain promotion)"
@@ -156,7 +160,7 @@ Write-Host "`nAll secrets stored in SqlLabVault. Run 'Unlock-SecretVault -Name S
 
 ---
 
-### Step 2 — Host setup
+### Step 2 - Host setup
 
 Run from an elevated PowerShell prompt on the Hyper-V host.
 
@@ -174,7 +178,7 @@ This script:
 
 ---
 
-### Step 3 — Build gold VHDX images
+### Step 3 - Build gold VHDX images
 
 These are built once and shared by all VMs as differencing disk parents.
 Never boot or modify the gold images directly.
@@ -192,14 +196,14 @@ override it for a one-off build, pass `-ISOPath` explicitly:
     -OutputVhdx "C:\HyperV\BaseImages\WS2025-Gold.vhdx"
 ```
 
-> Building each image takes 10–20 minutes depending on disk speed.
+> Building each image takes 10-20 minutes depending on disk speed.
 
 ---
 
-### Step 4 — Full automated deployment
+### Step 4 - Full automated deployment
 
 Once the gold images exist, run the orchestrator to build the entire lab. ISO paths
-are read automatically from `config.json` — no parameters required:
+are read automatically from `config.json` - no parameters required:
 
 ```powershell
 .\Deploy-Lab.ps1
@@ -223,9 +227,9 @@ The orchestrator runs six stages in order:
 | 3 | Promotes sqllabdc01 as the sqllab.local domain controller |
 | 4 | Configures RRAS (NAT + routing) on sqllabdc01 |
 | 5 | Joins all member VMs and the workstation to the domain |
-| 6 | Installs SQL Server on sqlsrv01–04, installs SSMS on sqlwork01 |
+| 6 | Installs SQL Server on sqlsrv01-04; installs SSMS, VS Code, Visual Studio, and GitHub on sqlwork01 |
 
-Total deployment time is approximately 60–90 minutes.
+Total deployment time is approximately 60-90 minutes.
 
 #### Preview mode (no changes made)
 
@@ -241,7 +245,7 @@ Total deployment time is approximately 60–90 minutes.
 
 ---
 
-### Step 5 — Post-deployment verification
+### Step 5 - Post-deployment verification
 
 From `sqlwork01`, open SSMS and connect to each SQL Server:
 
@@ -304,6 +308,48 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 .\06-Install-SQL.ps1 -VMDef $vm -Config $config
 ```
 
+### Install workstation software on sqlwork01
+
+Each tool can be run individually. The `-Extensions` parameter on VS Code
+and the `-Workloads` parameter on Visual Studio can be omitted to use the defaults.
+
+```powershell
+$config = Get-Content .\config.json | ConvertFrom-Json
+$vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlwork01'
+
+# Install with default extensions (ms-mssql.mssql, PowerShell, GitLens, etc.)
+.\08-Install-VSCode.ps1 -VMDef $vm -Config $config
+
+# Override extensions for a one-off run
+.\08-Install-VSCode.ps1 -VMDef $vm -Config $config `
+    -Extensions "ms-mssql.mssql ms-vscode.powershell"
+
+# Install Visual Studio Community (.NET desktop + SQL data tools workloads)
+.\09-Install-VisualStudio.ps1 -VMDef $vm -Config $config
+
+# Install GitHub Desktop, Git CLI, and apply git config from config.json
+.\10-Install-GitHub.ps1 -VMDef $vm -Config $config
+```
+
+> **Note:** GitHub Desktop requires interactive sign-in the first time it is opened.
+> Open GitHub Desktop on sqlwork01 and sign in via **File > Options > Accounts**.
+> All other git settings (username, email, default branch) are applied automatically
+> from `config.json`.
+
+---
+
+## Verifying the deployment
+
+Run the verification script from the host after deployment completes:
+
+```powershell
+.\Verify-Lab.ps1
+```
+
+This checks every layer of the lab in sequence - VM state, domain membership,
+network routing, SQL Server connectivity, and workstation software - and prints
+a pass/fail summary. Any failures include remediation hints.
+
 ---
 
 ## Tearing down the lab
@@ -363,7 +409,7 @@ To make the two subnets properly isolated (useful for AG multi-subnet testing):
 
 When a second drive is available, update `config.json` paths to use `D:\HyperV`
 and move the existing folders. The differencing disks and gold images can be
-moved with Hyper-V offline — just update the VHDX paths in each VM's settings
+moved with Hyper-V offline - just update the VHDX paths in each VM's settings
 after the move.
 
 ---
@@ -383,12 +429,31 @@ after the move.
 | SQLISOPath | C:\HyperV\ISO\SQL2025DeveloperEnterprise.iso | SQL Server ISO used by Deploy-Lab.ps1 and 06-Install-SQL.ps1 |
 | vSwitchInternal | sqllab-internal | Internal lab switch |
 | vSwitchExternal | sqllab-external | External (internet) switch |
-| HostInternalIP | 172.16.10.1 | Static IP assigned to the host vNIC on the internal switch — required for PSRemoting to reach lab VMs |
+| HostInternalIP | 172.16.10.1 | Static IP assigned to the host vNIC on the internal switch - required for PSRemoting to reach lab VMs |
 | DefaultVCPU | 2 | vCPU count for non-SQL VMs |
 | DefaultMemoryGB | 4 | RAM for non-SQL VMs |
 | SQLMemoryGB | 6 | RAM for SQL Server VMs |
 | TimeZone | Eastern Standard Time | Applied via unattend.xml |
 | SecretsVault | SqlLabVault | PowerShell SecretStore vault name |
+| GitUserName | sqlpadawan | Git global user.name applied to sqlwork01 |
+| GitUserEmail | sqlpadawan@gmail.com | Git global user.email applied to sqlwork01 |
+| GitDefaultBranch | main | Git global init.defaultBranch applied to sqlwork01 |
+| GitAutoCrlf | true | Git global core.autocrlf applied to sqlwork01 |
+
+### VS Code extensions
+
+The default extensions installed by `08-Install-VSCode.ps1` are:
+
+| Extension ID | Description |
+|---|---|
+| ms-mssql.mssql | SQL Server - IntelliSense, query execution, object explorer |
+| ms-python.python | Python language support |
+| ms-vscode.powershell | PowerShell language support |
+| eamodio.gitlens | Enhanced Git integration and blame annotations |
+| streetsidesoftware.code-spell-checker | Spell checking for code and comments |
+
+Override the list at call time with `-Extensions "id1 id2 id3"`.
+Find extension IDs on the VS Code marketplace - format is `Publisher.ExtensionName`.
 
 ### roles.json fields
 
@@ -426,7 +491,7 @@ All SQL Server VMs use the following directory layout:
 | Secret name | Used for |
 |---|---|
 | LocalAdminPass | Local Administrator password injected via unattend.xml |
-| DomainAdminPass | SQLLAB\Administrator — used for PSRemoting after domain join |
+| DomainAdminPass | SQLLAB\Administrator - used for PSRemoting after domain join |
 | DSSafeModePass | Active Directory DSRM password set during forest promotion |
 | SqlSvcPass | Password for the SQLLAB\svc-sql service account |
 | SaPassword | SQL Server `sa` login password |
@@ -472,7 +537,7 @@ $dc     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Role -eq 
 The scripts poll `Test-WSMan` for up to 15 minutes. If a VM exceeds this:
 
 1. Open Hyper-V Manager and check the VM console for errors
-2. Verify the unattend.xml was injected correctly — connect to the VM console
+2. Verify the unattend.xml was injected correctly - connect to the VM console
    and check `C:\Windows\Panther\unattend.xml`
 3. Ensure WinRM is enabled: connect via console and run `winrm quickconfig`
 
@@ -508,4 +573,4 @@ Remove-Item "C:\HyperV\BaseImages\WS2025-Gold.vhdx" -Force
 
 ---
 
-*Generated for sqllab.local Hyper-V lab — sqlpadawan*
+*Generated for sqllab.local Hyper-V lab - sqlpadawan*

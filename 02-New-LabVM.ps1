@@ -199,7 +199,7 @@ $vmGateway = $VMDef.Gateway
 $vmDNS     = $VMDef.DNS
 
 Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
-    param($IP, $Prefix, $Gateway, $DNS)
+    param($IP, $Prefix, $Gateway, $DNS, $Role)
 
     # Find the NIC with a link-local address - that is always the unconfigured
     # internal NIC. This avoids all MAC format matching issues entirely.
@@ -248,6 +248,31 @@ Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
     Set-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" `
         -RemoteAddress Any -ErrorAction SilentlyContinue
 
+    # Enable File and Printer Sharing so the host can map the admin share (C$)
+    # for copying the SQL Server ISO to the VM during stage 6.
+    Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing" -ErrorAction SilentlyContinue
+
+    # Disable Azure Arc setup on all VMs. Windows Server 2025 runs an Arc
+    # onboarding task on first boot - disable it via registry before it fires.
+    New-Item -Path 'HKLM:\SOFTWARE\Microsoft\AzureArc' -Force | Out-Null
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\AzureArc' `
+        -Name 'ArcSetupDisabled' -Value 1 -Type DWord
+    # Also disable the scheduled task directly as a belt-and-suspenders measure
+    Disable-ScheduledTask -TaskPath '\Microsoft\Azure Arc' -TaskName 'Azure Arc Setup' `
+        -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "Azure Arc setup disabled."
+
+    # Disable IE Enhanced Security Configuration on the workstation only.
+    # IE ESC is left enabled on domain controllers and SQL servers since those
+    # roles should not be used for general web browsing.
+    if ($Role -eq 'Workstation') {
+        $ieEscAdminKey = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}'
+        $ieEscUserKey  = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}'
+        Set-ItemProperty -Path $ieEscAdminKey -Name 'IsInstalled' -Value 0 -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $ieEscUserKey  -Name 'IsInstalled' -Value 0 -ErrorAction SilentlyContinue
+        Write-Host "IE Enhanced Security Configuration disabled."
+    }
+
     # Register a startup task to reapply the IP on reboot until a role makes
     # it permanent. Uses the same 169.254 detection approach.
     $taskScript = @"
@@ -279,7 +304,7 @@ if (-not `$existing) {
         -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Write-Host "Startup task registered."
 
-} -ArgumentList $vmIP, $vmPrefix, $vmGateway, $vmDNS
+} -ArgumentList $vmIP, $vmPrefix, $vmGateway, $vmDNS, $VMDef.Role
 
 # Only poll WinRM for VMs the host can reach directly (172.16.10.x subnet).
 # VMs on 192.168.10.x route through RRAS which isn't configured until stage 4,
