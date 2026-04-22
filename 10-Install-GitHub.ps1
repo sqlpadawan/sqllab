@@ -20,7 +20,7 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     $connected = $false
     $deadline  = (Get-Date).AddMinutes(5)
     while ((Get-Date) -lt $deadline) {
-        if (Test-NetConnection -ComputerName "central.github.com" -Port 443 `
+        if (Test-NetConnection -ComputerName "api.github.com" -Port 443 `
                 -InformationLevel Quiet -ErrorAction SilentlyContinue `
                 -WarningAction SilentlyContinue) {
             $connected = $true
@@ -34,75 +34,62 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     # -------------------------------------------------------------------------
-    # Install GitHub Desktop
-    # -------------------------------------------------------------------------
-    $url  = "https://central.github.com/deployments/desktop/desktopapp/latest/win32"
-    $dest = "C:\Windows\Temp\GitHubDesktopSetup.exe"
-
-    Write-Host "Downloading GitHub Desktop..."
-    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-
-    Write-Host "Installing GitHub Desktop silently..."
-    $result = Start-Process -FilePath $dest `
-        -ArgumentList "--silent" `
-        -Wait -PassThru -NoNewWindow
-
-    if ($result.ExitCode -notin @(0, 3010)) {
-        throw "GitHub Desktop install failed with exit code $($result.ExitCode)"
-    }
-    Write-Host "GitHub Desktop installed."
-
-    # -------------------------------------------------------------------------
-    # Install Git for Windows (provides git.exe on PATH)
-    # GitHub Desktop does not add git to the PATH - this is required for
-    # command line usage and VS Code terminal integration.
-    # -------------------------------------------------------------------------
-    Write-Host "Downloading Git for Windows..."
-    $gitUrl  = "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe"
-    $gitDest = "C:\Windows\Temp\GitSetup.exe"
-    Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
-
-    Write-Host "Installing Git for Windows silently..."
-    $gitResult = Start-Process -FilePath $gitDest `
-        -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
-        -Wait -PassThru -NoNewWindow
-
-    if ($gitResult.ExitCode -notin @(0, 3010)) {
-        Write-Warning "Git for Windows returned exit code $($gitResult.ExitCode) - continuing anyway."
-    } else {
-        Write-Host "Git for Windows installed."
-    }
-
-    # -------------------------------------------------------------------------
-    # Apply global git config from config.json values
-    # Uses the system-level gitconfig so settings apply to all users
-    # including domain accounts that log in later.
-    # Note: GitHub sign-in must be completed manually the first time
-    # GitHub Desktop is opened - OAuth requires interactive browser flow.
+    # Install Git for Windows
+    # Provides git.exe on PATH for command line usage and VS Code integration.
+    # Uses the GitHub API to resolve the latest release download URL so the
+    # script never needs to be updated when new versions are released.
     # -------------------------------------------------------------------------
     $gitExe = "C:\Program Files\Git\cmd\git.exe"
+
+    if (Test-Path $gitExe) {
+        Write-Host "Git for Windows already installed - skipping download."
+    } else {
+        Write-Host "Resolving latest Git for Windows release..."
+        $gitRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -UseBasicParsing
+        $gitUrl     = ($gitRelease.assets | Where-Object { $_.name -like "Git-*-64-bit.exe" } | Select-Object -First 1).browser_download_url
+        if (-not $gitUrl) {
+            throw "Could not resolve Git for Windows download URL from GitHub API."
+        }
+        Write-Host "Downloading Git for Windows from $gitUrl..."
+        $gitDest = "C:\Windows\Temp\GitSetup.exe"
+        Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
+
+        Write-Host "Installing Git for Windows silently..."
+        $gitResult = Start-Process -FilePath $gitDest `
+            -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
+            -Wait -PassThru -NoNewWindow
+
+        if ($gitResult.ExitCode -notin @(0, 3010)) {
+            throw "Git for Windows install failed with exit code $($gitResult.ExitCode)"
+        }
+        Write-Host "Git for Windows installed."
+        Remove-Item $gitDest -Force -ErrorAction SilentlyContinue
+    }
+
+    # -------------------------------------------------------------------------
+    # Apply global git config from config.json values.
+    # Uses system-level config so settings apply to all users including
+    # domain accounts that log in later.
+    # -------------------------------------------------------------------------
     if (-not (Test-Path $gitExe)) {
         Write-Warning "git.exe not found at $gitExe - skipping git config."
     } else {
         Write-Host "Applying git global config..."
-        Write-Host "  user.name  = $GitUserName"
-        Write-Host "  user.email = $GitUserEmail"
+        Write-Host "  user.name          = $GitUserName"
+        Write-Host "  user.email         = $GitUserEmail"
         Write-Host "  init.defaultBranch = $GitDefaultBranch"
-        Write-Host "  core.autocrlf = $GitAutoCrlf"
+        Write-Host "  core.autocrlf      = $GitAutoCrlf"
 
-        & $gitExe config --system user.name  $GitUserName
-        & $gitExe config --system user.email $GitUserEmail
+        & $gitExe config --system user.name          $GitUserName
+        & $gitExe config --system user.email         $GitUserEmail
         & $gitExe config --system init.defaultBranch $GitDefaultBranch
-        & $gitExe config --system core.autocrlf $GitAutoCrlf
-        & $gitExe config --system core.editor "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
+        & $gitExe config --system core.autocrlf      $GitAutoCrlf
+        & $gitExe config --system core.editor        "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
         & $gitExe config --system push.defaultBranch current
 
         Write-Host "Git config applied."
-        Write-Host ""
-        Write-Host "NOTE: GitHub Desktop sign-in must be completed manually."
-        Write-Host "      Open GitHub Desktop and sign in via File > Options > Accounts."
     }
 
-    Write-Host "GitHub installation complete."
+    Write-Host "Git installation complete."
 
 } -ArgumentList $Config.GitUserName, $Config.GitUserEmail, $Config.GitDefaultBranch, $Config.GitAutoClrf
