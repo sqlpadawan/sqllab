@@ -452,6 +452,7 @@ after the move.
 | SQLMemoryGB | 6 | RAM for SQL Server VMs |
 | TimeZone | Eastern Standard Time | Applied via unattend.xml |
 | SecretsVault | SqlLabVault | PowerShell SecretStore vault name |
+| LabUserName | sqlpadawan | Domain user account created for daily lab use and workstation software installs |
 | GitUserName | sqlpadawan | Git global user.name applied to sqlwork01 |
 | GitUserEmail | sqlpadawan@gmail.com | Git global user.email applied to sqlwork01 |
 | GitDefaultBranch | main | Git global init.defaultBranch applied to sqlwork01 |
@@ -512,6 +513,7 @@ All SQL Server VMs use the following directory layout:
 | DSSafeModePass | Active Directory DSRM password set during forest promotion |
 | SqlSvcPass | Password for the SQLLAB\svc-sql service account |
 | SaPassword | SQL Server `sa` login password |
+| LabUserPass | Password for the SQLLAB\sqlpadawan domain user account |
 
 ---
 

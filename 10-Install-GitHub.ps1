@@ -14,7 +14,7 @@ $domainCred = New-Object PSCredential(
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
-    param($GitUserName, $GitUserEmail, $GitDefaultBranch, $GitAutoCrlf)
+    param($GitUserName, $GitUserEmail, $GitDefaultBranch, $GitAutoCrlf, $LabUser)
 
     Write-Host "Checking internet connectivity..."
     $connected = $false
@@ -67,29 +67,47 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     # -------------------------------------------------------------------------
-    # Apply global git config from config.json values.
-    # Uses system-level config so settings apply to all users including
-    # domain accounts that log in later.
+    # Apply git config under the lab user account via scheduled task.
+    # Uses --global so settings go into the lab user's own .gitconfig rather
+    # than the system-wide gitconfig, keeping it personal to that account.
     # -------------------------------------------------------------------------
     if (-not (Test-Path $gitExe)) {
         Write-Warning "git.exe not found at $gitExe - skipping git config."
     } else {
-        Write-Host "Applying git global config..."
-        Write-Host "  user.name          = $GitUserName"
-        Write-Host "  user.email         = $GitUserEmail"
-        Write-Host "  init.defaultBranch = $GitDefaultBranch"
-        Write-Host "  core.autocrlf      = $GitAutoCrlf"
+        Write-Host "Applying git config for $LabUser..."
 
-        & $gitExe config --system user.name          $GitUserName
-        & $gitExe config --system user.email         $GitUserEmail
-        & $gitExe config --system init.defaultBranch $GitDefaultBranch
-        & $gitExe config --system core.autocrlf      $GitAutoCrlf
-        & $gitExe config --system core.editor        "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
-        & $gitExe config --system push.defaultBranch current
+        $gitScript = @"
+& '$gitExe' config --global user.name          '$GitUserName'
+& '$gitExe' config --global user.email         '$GitUserEmail'
+& '$gitExe' config --global init.defaultBranch '$GitDefaultBranch'
+& '$gitExe' config --global core.autocrlf      '$GitAutoCrlf'
+& '$gitExe' config --global core.editor        "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
+& '$gitExe' config --global push.defaultBranch current
+'done' | Out-File 'C:\Windows\Temp\GitConfigDone.txt' -Force
+"@
+        $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($gitScript))
+        $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
+        $principal = New-ScheduledTaskPrincipal -UserId $LabUser -RunLevel Highest
+        $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+        Register-ScheduledTask -TaskName 'GitConfig' -Action $action `
+            -Principal $principal -Settings $settings -Force | Out-Null
+
+        Remove-Item 'C:\Windows\Temp\GitConfigDone.txt' -Force -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName 'GitConfig'
+
+        $deadline = (Get-Date).AddMinutes(5)
+        while ((Get-Date) -lt $deadline) {
+            if (Test-Path 'C:\Windows\Temp\GitConfigDone.txt') { break }
+            Start-Sleep -Seconds 5
+        }
+
+        Unregister-ScheduledTask -TaskName 'GitConfig' -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item 'C:\Windows\Temp\GitConfigDone.txt' -Force -ErrorAction SilentlyContinue
 
         Write-Host "Git config applied."
     }
 
     Write-Host "Git installation complete."
 
-} -ArgumentList $Config.GitUserName, $Config.GitUserEmail, $Config.GitDefaultBranch, $Config.GitAutoClrf
+} -ArgumentList $Config.GitUserName, $Config.GitUserEmail, $Config.GitDefaultBranch, $Config.GitAutoClrf, "$($Config.DomainNetBIOS)\$($Config.LabUserName)"

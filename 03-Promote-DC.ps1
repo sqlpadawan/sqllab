@@ -68,14 +68,15 @@ if (-not $adReady) {
     throw "[$($VMDef.Name)] AD DS did not respond within 20 minutes. Check the VM console."
 }
 
-# Create the LabServers OU that 05-Join-Domain.ps1 targets, and the svc-sql
-# service account that 06-Install-SQL.ps1 uses. Doing this here ensures they
-# exist before any member VM tries to join or SQL setup runs.
-Write-Host "[$($VMDef.Name)] Creating LabServers OU and svc-sql account..."
-$sqlSvcPass = Get-Secret -Name 'SqlSvcPass' -Vault $Config.SecretsVault
+# Create the LabServers OU, the svc-sql service account, and the lab user
+# account. Doing this here ensures everything exists before any member VM
+# tries to join or workstation software installs run.
+Write-Host "[$($VMDef.Name)] Creating LabServers OU, svc-sql account, and lab user..."
+$sqlSvcPass = Get-Secret -Name 'SqlSvcPass'   -Vault $Config.SecretsVault
+$labUserPass = Get-Secret -Name 'LabUserPass' -Vault $Config.SecretsVault
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
-    param($DomainDN, $SqlSvcPass)
+    param($DomainDN, $SqlSvcPass, $LabUserPass, $LabUserName)
 
     # LabServers OU
     $ouDN = "OU=LabServers,$DomainDN"
@@ -100,7 +101,23 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         Write-Host "Exists: svc-sql"
     }
 
-} -ArgumentList "DC=$($Config.DomainFQDN.Replace('.',',DC='))", $sqlSvcPass
+    # Lab user account - used for workstation software installs and daily use
+    if (-not (Get-ADUser -Filter "SamAccountName -eq '$LabUserName'" -ErrorAction SilentlyContinue)) {
+        New-ADUser -Name $LabUserName `
+                   -SamAccountName $LabUserName `
+                   -UserPrincipalName "$LabUserName@$((Get-ADDomain).DNSRoot)" `
+                   -AccountPassword $LabUserPass `
+                   -PasswordNeverExpires $true `
+                   -CannotChangePassword $false `
+                   -Enabled $true
+        # Add to Domain Admins so the account can manage the lab environment
+        Add-ADGroupMember -Identity 'Domain Admins' -Members $LabUserName
+        Write-Host "Created account: $LabUserName (added to Domain Admins)"
+    } else {
+        Write-Host "Exists: $LabUserName"
+    }
+
+} -ArgumentList "DC=$($Config.DomainFQDN.Replace('.',',DC='))", $sqlSvcPass, $labUserPass, $Config.LabUserName
 
 # Create DNS reverse lookup zones for both lab subnets.
 # Reverse DNS is used by SQL Server for Kerberos authentication, linked server

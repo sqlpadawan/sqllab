@@ -18,7 +18,7 @@ $domainCred = New-Object PSCredential(
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
-    param($Extensions)
+    param($Extensions, $LabUser)
 
     Write-Host "Checking internet connectivity..."
     $connected = $false
@@ -102,9 +102,36 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     Write-Host "VS Code settings written to $settingsPath"
 
     # -------------------------------------------------------------------------
+    # Ensure the lab user profile exists on this machine before installing
+    # extensions. Domain user profiles are created on first interactive login.
+    # We force creation by running a no-op process as that user via a scheduled
+    # task with a short delay, which causes Windows to initialize the profile.
+    # -------------------------------------------------------------------------
+    Write-Host "Ensuring lab user profile exists for $LabUser..."
+    $profileScript = "'profile_created' | Out-File 'C:\Windows\Temp\ProfileDone.txt' -Force"
+    $profEncoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($profileScript))
+    $profAction    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $profEncoded"
+    $profPrincipal = New-ScheduledTaskPrincipal -UserId $LabUser -RunLevel Highest
+    $profSettings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    Register-ScheduledTask -TaskName 'CreateLabUserProfile' -Action $profAction `
+        -Principal $profPrincipal -Settings $profSettings -Force | Out-Null
+    Remove-Item 'C:\Windows\Temp\ProfileDone.txt' -Force -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName 'CreateLabUserProfile'
+    $profDeadline = (Get-Date).AddMinutes(2)
+    while ((Get-Date) -lt $profDeadline) {
+        if (Test-Path 'C:\Windows\Temp\ProfileDone.txt') { break }
+        Start-Sleep -Seconds 5
+    }
+    Unregister-ScheduledTask -TaskName 'CreateLabUserProfile' -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item 'C:\Windows\Temp\ProfileDone.txt' -Force -ErrorAction SilentlyContinue
+    Write-Host "Lab user profile ready."
+
+    # -------------------------------------------------------------------------
     # Install extensions
-    # The 'code' CLI is added to PATH by the installer but the current session
-    # won't see it yet - use the full path instead.
+    # code.cmd requires a proper user profile to store extensions - it cannot
+    # run correctly in a PSRemoting SYSTEM context. Use a scheduled task running
+    # as the lab user who now has a profile on this machine.
     # -------------------------------------------------------------------------
     $codeCli = "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd"
 
@@ -115,20 +142,41 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     $extList = $Extensions -split ' ' | Where-Object { $_ -ne '' }
-    Write-Host "Installing $($extList.Count) extension(s)..."
+    Write-Host "Installing $($extList.Count) extension(s) as $LabUser..."
 
-    foreach ($ext in $extList) {
-        Write-Host "  Installing: $ext"
-        $proc = Start-Process -FilePath $codeCli `
-            -ArgumentList "--install-extension $ext --force" `
-            -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            Write-Warning "  Extension '$ext' returned exit code $($proc.ExitCode)"
-        } else {
-            Write-Host "  Installed: $ext"
-        }
+    # Build a script that installs each extension and writes a done marker
+    $extCommands = ($extList | ForEach-Object {
+        "& '$codeCli' --install-extension $_ --force 2>&1"
+    }) -join "`n"
+
+    $taskScript = @"
+$extCommands
+'done' | Out-File 'C:\Windows\Temp\VSCodeExtDone.txt' -Force
+"@
+    $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskScript))
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                     -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
+    # Run as the lab user so extensions install into their profile
+    $principal = New-ScheduledTaskPrincipal -UserId $LabUser -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+    Register-ScheduledTask -TaskName 'VSCodeExtInstall' -Action $action `
+        -Principal $principal -Settings $settings -Force | Out-Null
+
+    Remove-Item 'C:\Windows\Temp\VSCodeExtDone.txt' -Force -ErrorAction SilentlyContinue
+
+    Start-ScheduledTask -TaskName 'VSCodeExtInstall'
+    Write-Host "Extension install task started - waiting for completion..."
+
+    $deadline = (Get-Date).AddMinutes(10)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path 'C:\Windows\Temp\VSCodeExtDone.txt') { break }
+        Start-Sleep -Seconds 10
     }
 
+    Unregister-ScheduledTask -TaskName 'VSCodeExtInstall' -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item 'C:\Windows\Temp\VSCodeExtDone.txt' -Force -ErrorAction SilentlyContinue
+
+    Write-Host "VS Code extensions installed."
     Write-Host "VS Code configuration complete."
 
-} -ArgumentList $Extensions
+} -ArgumentList $Extensions, "$($Config.DomainNetBIOS)\$($Config.LabUserName)"

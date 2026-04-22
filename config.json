@@ -20,5 +20,6 @@
   "GitUserName": "sqlpadawan",
   "GitUserEmail": "sqlpadawan@gmail.com",
   "GitDefaultBranch": "main",
-  "GitAutoClrf": "true"
+  "GitAutoClrf": "true",
+  "LabUserName": "sqlpadawan"
 }
