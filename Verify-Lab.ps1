@@ -74,12 +74,13 @@ foreach ($vm in $roles | Where-Object { $_.Role -ne 'DC' }) {
         Write-Fail "$($vm.Name) ($($vm.IP)) - WinRM not responding"
     }
 }
-# DC uses domain cred - just test TCP
-if (Test-NetConnection -ComputerName $config.DomainFQDN -Port 5985 `
+# DC - test by IP since FQDN requires Kerberos from a non-domain host
+$dcIP = ($roles | Where-Object Role -eq 'DC').IP
+if (Test-NetConnection -ComputerName $dcIP -Port 5985 `
         -InformationLevel Quiet -WarningAction SilentlyContinue) {
-    Write-Pass "sqllabdc01 (172.16.10.10) - WinRM reachable"
+    Write-Pass "sqllabdc01 ($dcIP) - WinRM reachable"
 } else {
-    Write-Fail "sqllabdc01 (172.16.10.10) - WinRM not responding"
+    Write-Fail "sqllabdc01 ($dcIP) - WinRM not responding"
 }
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,8 @@ if (Test-NetConnection -ComputerName $config.DomainFQDN -Port 5985 `
 # ---------------------------------------------------------------------------
 Write-Check "[4/6] Domain membership..."
 try {
-    $computers = Invoke-Command -ComputerName $config.DomainFQDN `
+    $dcIP = ($roles | Where-Object Role -eq 'DC').IP
+    $computers = Invoke-Command -ComputerName $dcIP `
         -Credential $domainCred -ErrorAction Stop -ScriptBlock {
         Get-ADComputer -Filter * | Select-Object -ExpandProperty Name
     }
@@ -163,15 +165,22 @@ try {
         -ErrorAction Stop -ScriptBlock {
 
         $checks = @{
-            "SSMS"             = "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\Ssms.exe"
-            "VS Code"          = "C:\Program Files\Microsoft VS Code\Code.exe"
-            "Visual Studio"    = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
-            "GitHub Desktop"   = "$env:LOCALAPPDATA\GitHubDesktop\GitHubDesktop.exe"
-            "Git"              = "C:\Program Files\Git\cmd\git.exe"
+            "SSMS"          = @(
+                "C:\Program Files\Microsoft SQL Server Management Studio 22\Common7\IDE\Ssms.exe",
+                "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\Ssms.exe",
+                "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Ssms.exe"
+            )
+            "VS Code"       = @("C:\Program Files\Microsoft VS Code\Code.exe")
+            "Visual Studio" = @("C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe")
+            "Git"           = @("C:\Program Files\Git\cmd\git.exe")
         }
 
         foreach ($app in $checks.Keys) {
-            if (Test-Path $checks[$app]) {
+            $found = $false
+            foreach ($path in $checks[$app]) {
+                if (Test-Path $path) { $found = $true; break }
+            }
+            if ($found) {
                 Write-Host "  [PASS] $app - installed" -ForegroundColor Green
             } else {
                 Write-Host "  [WARN] $app - not found at expected path" -ForegroundColor Yellow

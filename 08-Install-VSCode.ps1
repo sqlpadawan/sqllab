@@ -102,30 +102,54 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     Write-Host "VS Code settings written to $settingsPath"
 
     # -------------------------------------------------------------------------
-    # Ensure the lab user profile exists on this machine before installing
-    # extensions. Domain user profiles are created on first interactive login.
-    # We force creation by running a no-op process as that user via a scheduled
-    # task with a short delay, which causes Windows to initialize the profile.
+    # Ensure the lab user can log on locally and has a profile on this machine.
+    # Add to local Administrators, then force profile creation via UserProfile API.
     # -------------------------------------------------------------------------
-    Write-Host "Ensuring lab user profile exists for $LabUser..."
-    $profileScript = "'profile_created' | Out-File 'C:\Windows\Temp\ProfileDone.txt' -Force"
-    $profEncoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($profileScript))
-    $profAction    = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $profEncoded"
-    $profPrincipal = New-ScheduledTaskPrincipal -UserId $LabUser -RunLevel Highest
-    $profSettings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
-    Register-ScheduledTask -TaskName 'CreateLabUserProfile' -Action $profAction `
-        -Principal $profPrincipal -Settings $profSettings -Force | Out-Null
-    Remove-Item 'C:\Windows\Temp\ProfileDone.txt' -Force -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName 'CreateLabUserProfile'
-    $profDeadline = (Get-Date).AddMinutes(2)
-    while ((Get-Date) -lt $profDeadline) {
-        if (Test-Path 'C:\Windows\Temp\ProfileDone.txt') { break }
-        Start-Sleep -Seconds 5
+    Write-Host "Configuring lab user local access and profile for $LabUser..."
+    $username = $LabUser.Split('\')[-1]
+
+    # Add lab user to local Administrators group
+    try {
+        $adminGroup = [ADSI]"WinNT://./Administrators,group"
+        $adminGroup.Add("WinNT://$($LabUser.Replace('\', '/'))")
+        Write-Host "Added $LabUser to local Administrators."
+    } catch {
+        Write-Host "Local Administrators: $LabUser may already be a member."
     }
-    Unregister-ScheduledTask -TaskName 'CreateLabUserProfile' -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item 'C:\Windows\Temp\ProfileDone.txt' -Force -ErrorAction SilentlyContinue
-    Write-Host "Lab user profile ready."
+
+    # Force Windows to initialize the user profile using the UserProfile API.
+    # This avoids needing an interactive login or a scheduled task.
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class UserProfileHelper {
+    [DllImport("userenv.dll", SetLastError=true, CharSet=CharSet.Auto)]
+    public static extern bool CreateProfile(string pszUserSid, string pszUserName, StringBuilder pszProfilePath, uint cchProfilePath);
+}
+"@
+    try {
+        $sid = (New-Object System.Security.Principal.NTAccount($LabUser)).Translate(
+            [System.Security.Principal.SecurityIdentifier]).Value
+        $sb = New-Object System.Text.StringBuilder(260)
+        [UserProfileHelper]::CreateProfile($sid, $username, $sb, 260) | Out-Null
+        Write-Host "Profile API called for $username."
+    } catch {
+        Write-Warning "Profile API call failed: $_ - continuing anyway."
+    }
+
+    # Wait up to 15 seconds for the profile directory to appear
+    $profDir = "C:\Users\$username"
+    $profDeadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $profDeadline -and -not (Test-Path $profDir)) {
+        Start-Sleep -Seconds 2
+    }
+    if (Test-Path $profDir) {
+        Write-Host "Lab user profile ready at $profDir"
+    } else {
+        Write-Warning "Profile not found at $profDir - extensions may install to wrong location."
+    }
+
 
     # -------------------------------------------------------------------------
     # Install extensions
@@ -169,7 +193,10 @@ $extCommands
 
     $deadline = (Get-Date).AddMinutes(10)
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path 'C:\Windows\Temp\VSCodeExtDone.txt') { break }
+        # Check both the done marker file and task state (enum or string)
+        $taskState = (Get-ScheduledTask -TaskName 'VSCodeExtInstall' -ErrorAction SilentlyContinue).State
+        if ((Test-Path 'C:\Windows\Temp\VSCodeExtDone.txt') -or
+            $taskState -eq 'Ready' -or [int]$taskState -eq 3) { break }
         Start-Sleep -Seconds 10
     }
 

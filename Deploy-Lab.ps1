@@ -135,3 +135,7 @@ Write-Host "`n=== Deployment complete ===" -ForegroundColor Green
 Write-Host "Domain controller : $($dc.IP)"
 Write-Host "SQL servers       : $(($roles | Where-Object Role -eq 'SQL').IP -join ', ')"
 Write-Host "Workstation       : $(($roles | Where-Object Role -eq 'Workstation').IP)"
+
+# Run post-deployment verification
+Write-Host "`n[Verify] Running post-deployment verification..." -ForegroundColor Cyan
+.\Verify-Lab.ps1 -ConfigPath $ConfigPath -RolesPath $RolesPath

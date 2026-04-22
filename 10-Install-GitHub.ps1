@@ -98,7 +98,9 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
         $deadline = (Get-Date).AddMinutes(5)
         while ((Get-Date) -lt $deadline) {
-            if (Test-Path 'C:\Windows\Temp\GitConfigDone.txt') { break }
+            $gitState = (Get-ScheduledTask -TaskName 'GitConfig' -ErrorAction SilentlyContinue).State
+            if ((Test-Path 'C:\Windows\Temp\GitConfigDone.txt') -or
+                $gitState -eq 'Ready' -or [int]$gitState -eq 3) { break }
             Start-Sleep -Seconds 5
         }
 

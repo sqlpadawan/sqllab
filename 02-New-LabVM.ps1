@@ -52,7 +52,8 @@ try {
 }
 
 Set-VM -VM $vm -ProcessorCount $VMDef.VCPU `
-       -DynamicMemory:$false `
+       -StaticMemory `
+       -MemoryStartupBytes ($VMDef.MemoryGB * 1GB) `
        -AutomaticCheckpointsEnabled $false `
        -AutomaticStopAction ShutDown `
        -AutomaticStartAction StartIfRunning
@@ -72,16 +73,18 @@ $ipOctets  = $VMDef.IP -split '\.'
 $macSuffix = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], [int]$ipOctets[3]
 $staticMac = "00155D$macSuffix"
 Write-Host "[$($VMDef.Name)] Assigning static MAC: $staticMac"
-Set-VMNetworkAdapter -VMNetworkAdapterId (Get-VMNetworkAdapter -VM $vm)[0].Id -StaticMacAddress $staticMac
+$intNic = (Get-VMNetworkAdapter -VM $vm)[0]
+Set-VMNetworkAdapter -VM $vm -Name $intNic.Name -StaticMacAddress $staticMac
 $rawMac       = $staticMac
 $formattedMac = $rawMac -replace '(..(?!$))', '$1-'
 Write-Host "[$($VMDef.Name)] Internal NIC MAC: $formattedMac"
 
 # Assign a distinct MAC to the external NIC if present (DC only)
 if ($VMDef.NICs -eq 2) {
-    $extSuffix  = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], ([int]$ipOctets[3] + 1)
+    $extSuffix    = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], ([int]$ipOctets[3] + 1)
     $extStaticMac = "00155D$extSuffix"
-    Set-VMNetworkAdapter -VMNetworkAdapterId (Get-VMNetworkAdapter -VM $vm)[1].Id -StaticMacAddress $extStaticMac
+    $extNic = (Get-VMNetworkAdapter -VM $vm)[1]
+    Set-VMNetworkAdapter -VM $vm -Name $extNic.Name -StaticMacAddress $extStaticMac
     Write-Host "[$($VMDef.Name)] External NIC MAC: $($extStaticMac -replace '(..(?!$))', '$1-')"
 }
 

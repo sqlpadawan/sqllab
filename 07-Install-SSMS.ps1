@@ -31,20 +31,35 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         throw "No internet access after 5 minutes. Verify RRAS NAT is running on sqllabdc01."
     }
 
-    $ssmsUrl = "https://aka.ms/ssmsfullsetup"
-    $dest    = "C:\Windows\Temp\SSMS-Setup.exe"
+    # SSMS 22 uses the Visual Studio Installer bootstrapper model.
+    # The bootstrapper (vs_SSMS.exe) downloads and installs SSMS via the
+    # Visual Studio Installer - there is no longer a standalone MSI.
+    $ssmsUrl = "https://aka.ms/vs/17/release/vs_ssms.exe"
+    $dest    = "C:\Windows\Temp\vs_SSMS.exe"
 
-    Write-Host "Downloading SSMS..."
+    Write-Host "Downloading SSMS 22 bootstrapper..."
     Invoke-WebRequest -Uri $ssmsUrl -OutFile $dest -UseBasicParsing
 
-    Write-Host "Installing SSMS silently..."
+    # Silent install flags for Visual Studio Installer bootstrapper:
+    #   --quiet        - no UI
+    #   --norestart    - suppress automatic reboot
+    #   --wait         - wait for install to complete before returning
+    #   --nocache      - do not cache installer files to save disk space
+    Write-Host "Installing SSMS 22 silently (this takes 10-20 minutes)..."
     $result = Start-Process -FilePath $dest `
-        -ArgumentList "/install /quiet /norestart" `
+        -ArgumentList "--quiet --norestart --wait --nocache" `
         -Wait -PassThru -NoNewWindow
 
+    # 0 = success, 3010 = reboot required
     if ($result.ExitCode -notin @(0, 3010)) {
-        throw "SSMS install failed with exit code $($result.ExitCode)"
+        throw "SSMS 22 install failed with exit code $($result.ExitCode)"
     }
 
-    Write-Host "SSMS installation complete."
+    if ($result.ExitCode -eq 3010) {
+        Write-Warning "SSMS 22 installed successfully but requires a reboot to complete."
+    } else {
+        Write-Host "SSMS 22 installation complete."
+    }
+
+    Remove-Item $dest -Force -ErrorAction SilentlyContinue
 }
