@@ -262,6 +262,19 @@ Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
         -ErrorAction SilentlyContinue | Out-Null
     Write-Host "Azure Arc setup disabled."
 
+    # Disable Windows Update on all VMs. Automatic updates consume bandwidth,
+    # can cause unexpected reboots, and introduce uncontrolled changes in a lab.
+    # Updates can be applied manually when needed via Windows Update settings.
+    $wuPolicyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    New-Item -Path $wuPolicyPath -Force | Out-Null
+    Set-ItemProperty -Path $wuPolicyPath -Name 'NoAutoUpdate'      -Value 1 -Type DWord
+    Set-ItemProperty -Path $wuPolicyPath -Name 'AUOptions'         -Value 1 -Type DWord
+    Set-ItemProperty -Path $wuPolicyPath -Name 'NoAutoRebootWithLoggedOnUsers' -Value 1 -Type DWord
+    # Disable the Windows Update service startup
+    Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+    Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+    Write-Host "Windows Update disabled."
+
     # Disable IE Enhanced Security Configuration on the workstation only.
     # IE ESC is left enabled on domain controllers and SQL servers since those
     # roles should not be used for general web browsing.

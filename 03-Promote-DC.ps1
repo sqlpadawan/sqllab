@@ -101,3 +101,43 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
 } -ArgumentList "DC=$($Config.DomainFQDN.Replace('.',',DC='))", $sqlSvcPass
+
+# Create DNS reverse lookup zones for both lab subnets.
+# Reverse DNS is used by SQL Server for Kerberos authentication, linked server
+# connections, and availability group configurations. Without it, nslookup and
+# some SQL features produce delays or warnings.
+Write-Host "[$($VMDef.Name)] Creating DNS reverse lookup zones..."
+Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+
+    # DC-A subnet: 172.16.10.0/24 -> reverse zone is 10.16.172.in-addr.arpa
+    $zoneA = '10.16.172.in-addr.arpa'
+    if (-not (Get-DnsServerZone -Name $zoneA -ErrorAction SilentlyContinue)) {
+        Add-DnsServerPrimaryZone -NetworkID '172.16.10.0/24' -ReplicationScope 'Forest'
+        Write-Host "Created reverse zone: $zoneA"
+    } else {
+        Write-Host "Exists: $zoneA"
+    }
+
+    # DC-B subnet: 192.168.10.0/24 -> reverse zone is 10.168.192.in-addr.arpa
+    $zoneB = '10.168.192.in-addr.arpa'
+    if (-not (Get-DnsServerZone -Name $zoneB -ErrorAction SilentlyContinue)) {
+        Add-DnsServerPrimaryZone -NetworkID '192.168.10.0/24' -ReplicationScope 'Forest'
+        Write-Host "Created reverse zone: $zoneB"
+    } else {
+        Write-Host "Exists: $zoneB"
+    }
+
+    # Create PTR records for the DC itself - member servers will register
+    # their own PTR records automatically when they join the domain.
+    $dcIP = (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -like '172.16.*' }).IPAddress
+    if ($dcIP) {
+        $octet = $dcIP.Split('.')[-1]
+        Add-DnsServerResourceRecordPtr -ZoneName $zoneA `
+            -Name $octet -PtrDomainName "sqllabdc01.$((Get-ADDomain).DNSRoot)." `
+            -ErrorAction SilentlyContinue
+        Write-Host "Created PTR record: $dcIP -> sqllabdc01"
+    }
+
+    Write-Host "DNS reverse lookup zones complete."
+}
