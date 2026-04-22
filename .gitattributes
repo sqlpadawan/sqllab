@@ -1,2 +1,2 @@
-*.ps1 text eol=lf
-*.json text eol=lf
+* text=auto eol=lf
+
