@@ -18,6 +18,8 @@ workstation, and four SQL Server instances spread across two simulated data cent
 
 ### Network design
 
+<img src="sqllab-network.svg" alt="sqllab.local network topology" width="500">
+
 | Item | Value |
 |---|---|
 | Domain FQDN | sqllab.local |
