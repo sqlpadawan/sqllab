@@ -13,7 +13,10 @@ $domainCred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
+$vsUrl = $Config.DownloadURLs.VisualStudio
+
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+    param($VsUrl)
 
     Write-Host "Checking internet connectivity..."
     $connected = $false
@@ -32,7 +35,7 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         throw "No internet access after 5 minutes. Verify RRAS NAT is running on sqllabdc01."
     }
 
-    $url  = "https://aka.ms/vs/17/release/vs_community.exe"
+    $url  = $VsUrl
     $dest = "C:\Windows\Temp\vs_community.exe"
 
     Write-Host "Downloading Visual Studio Community bootstrapper..."
@@ -93,4 +96,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     } else {
         Write-Host "Visual Studio Community installation complete."
     }
-}
+} -ArgumentList $vsUrl

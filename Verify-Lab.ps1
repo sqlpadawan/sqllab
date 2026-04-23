@@ -166,12 +166,16 @@ try {
 
         $checks = @{
             "SSMS"          = @(
+                "C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SSMS.exe",
                 "C:\Program Files\Microsoft SQL Server Management Studio 22\Common7\IDE\Ssms.exe",
                 "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\Ssms.exe",
                 "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Ssms.exe"
             )
             "VS Code"       = @("C:\Program Files\Microsoft VS Code\Code.exe")
-            "Visual Studio" = @("C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe")
+            "Visual Studio" = @(
+                "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\IDE\devenv.exe",
+                "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
+            )
             "Git"           = @("C:\Program Files\Git\cmd\git.exe")
         }
 

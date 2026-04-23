@@ -13,7 +13,10 @@ $domainCred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
+$ssmsUrl = $Config.DownloadURLs.SSMS
+
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+    param($SsmsUrl)
 
     Write-Host "Checking internet connectivity..."
     $connected = $false
@@ -34,7 +37,7 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     # SSMS 22 uses the Visual Studio Installer bootstrapper model.
     # The bootstrapper (vs_SSMS.exe) downloads and installs SSMS via the
     # Visual Studio Installer - there is no longer a standalone MSI.
-    $ssmsUrl = "https://aka.ms/ssms/22/release/vs_SSMS.exe"
+    $ssmsUrl = $SsmsUrl
     $dest    = "C:\Windows\Temp\vs_SSMS.exe"
 
     Write-Host "Downloading SSMS 22 bootstrapper..."
@@ -69,4 +72,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     Remove-Item $dest -Force -ErrorAction SilentlyContinue
-}
+} -ArgumentList $ssmsUrl

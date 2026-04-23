@@ -13,21 +13,7 @@ $cred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
-# Derive the static MACs using the same formula as 02-New-LabVM.ps1.
-# Internal NIC: 00-15-5D + octets 2-3-4 of the DC IP
-# External NIC: same but last byte incremented by 1
-# This is more reliable than querying Get-VMNetworkAdapter which can return
-# duplicate MACs when the switch binding hasn't fully initialized.
-$ipOctets = $VMDef.IP -split '\.'
-$intSuffix = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], [int]$ipOctets[3]
-$extSuffix = '{0:X2}{1:X2}{2:X2}' -f [int]$ipOctets[1], [int]$ipOctets[2], ([int]$ipOctets[3] + 1)
-$intMac = ("00155D$intSuffix") -replace '(..(?!$))', '$1-'
-$extMac = ("00155D$extSuffix") -replace '(..(?!$))', '$1-'
-
-Write-Host "[$($VMDef.Name)] Internal MAC: $intMac  External MAC: $extMac"
-
 Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
-    param($IntMac, $ExtMac)
 
     Write-Host "Installing RRAS and Routing..."
     Install-WindowsFeature RemoteAccess, Routing, RSAT-RemoteAccess-PowerShell `
@@ -98,4 +84,4 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
         Write-Host "DHCP renewed on $($ext.Name)."
     }
 
-} -ArgumentList $intMac, $extMac
+}

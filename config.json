@@ -9,17 +9,16 @@
   "vSwitchInternal": "sqllab-internal",
   "vSwitchExternal": "sqllab-external",
   "HostInternalIP": "172.16.10.1",
-  "DCExternalNIC": "Ethernet 0",
-  "DCInternalNIC": "Ethernet 1",
-  "DefaultVCPU": 2,
-  "DefaultMemoryGB": 4,
-  "SQLMemoryGB": 4,
   "TimeZone": "Eastern Standard Time",
-  "AdminUser": "labadmin",
   "SecretsVault": "SqlLabVault",
   "GitUserName": "sqlpadawan",
   "GitUserEmail": "sqlpadawan@gmail.com",
   "GitDefaultBranch": "main",
   "GitAutoClrf": "true",
-  "LabUserName": "sqlpadawan"
+  "LabUserName": "sqlpadawan",
+  "DownloadURLs": {
+    "SSMS": "https://aka.ms/ssms/22/release/vs_SSMS.exe",
+    "VSCode": "https://update.code.visualstudio.com/latest/win32-x64/stable",
+    "VisualStudio": "https://aka.ms/vs/18/Stable/vs_community.exe"
+  }
 }

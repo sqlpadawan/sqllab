@@ -92,9 +92,9 @@ wherever your ISOs actually live before running any scripts.
 | `04-Configure-RRAS.ps1` | Installs RRAS, configures NAT and static routes on the DC |
 | `05-Join-Domain.ps1` | Joins a VM to sqllab.local and waits for rejoin |
 | `06-Install-SQL.ps1` | Unattended SQL Server install using a generated ini file |
-| `07-Install-SSMS.ps1` | Downloads and silently installs SSMS on sqlwork01 |
+| `07-Install-SSMS.ps1` | Downloads and silently installs SSMS 22 on sqlwork01 using the Visual Studio Installer bootstrapper |
 | `08-Install-VSCode.ps1` | Installs VS Code, disables AI features, installs extensions on sqlwork01 |
-| `09-Install-VisualStudio.ps1` | Installs Visual Studio Community (.NET desktop + SQL data tools) on sqlwork01 |
+| `09-Install-VisualStudio.ps1` | Installs Visual Studio 2026 Community (.NET desktop + SQL data tools) on sqlwork01 |
 | `10-Install-GitHub.ps1` | Installs GitHub Desktop, Git for Windows, and applies git config on sqlwork01 |
 | `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
 | `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
@@ -136,6 +136,7 @@ $secrets = [ordered]@{
     DSSafeModePass  = "Active Directory DSRM password"
     SqlSvcPass      = "SQLLAB\svc-sql service account password"
     SaPassword      = "SQL Server 'sa' login password"
+    LabUserPass     = "SQLLAB\sqlpadawan domain user password"
 }
 
 foreach ($name in $secrets.Keys) {
@@ -447,9 +448,6 @@ after the move.
 | vSwitchInternal | sqllab-internal | Internal lab switch |
 | vSwitchExternal | sqllab-external | External (internet) switch |
 | HostInternalIP | 172.16.10.1 | Static IP assigned to the host vNIC on the internal switch - required for PSRemoting to reach lab VMs |
-| DefaultVCPU | 2 | vCPU count for non-SQL VMs |
-| DefaultMemoryGB | 4 | RAM for non-SQL VMs |
-| SQLMemoryGB | 6 | RAM for SQL Server VMs |
 | TimeZone | Eastern Standard Time | Applied via unattend.xml |
 | SecretsVault | SqlLabVault | PowerShell SecretStore vault name |
 | LabUserName | sqlpadawan | Domain user account created for daily lab use and workstation software installs |
@@ -457,6 +455,9 @@ after the move.
 | GitUserEmail | sqlpadawan@gmail.com | Git global user.email applied to sqlwork01 |
 | GitDefaultBranch | main | Git global init.defaultBranch applied to sqlwork01 |
 | GitAutoCrlf | true | Git global core.autocrlf applied to sqlwork01 |
+| DownloadURLs.SSMS | https://aka.ms/ssms/22/release/vs_SSMS.exe | SSMS 22 bootstrapper download URL |
+| DownloadURLs.VSCode | https://update.code.visualstudio.com/latest/win32-x64/stable | VS Code installer download URL |
+| DownloadURLs.VisualStudio | https://aka.ms/vs/18/Stable/vs_community.exe | Visual Studio 2026 Community bootstrapper download URL |
 
 ### VS Code extensions
 

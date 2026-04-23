@@ -17,8 +17,10 @@ $domainCred = New-Object PSCredential(
     "$($Config.DomainNetBIOS)\Administrator",
     (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
+$vsCodeUrl = $Config.DownloadURLs.VSCode
+
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
-    param($Extensions, $LabUser)
+    param($Extensions, $LabUser, $VSCodeUrl)
 
     Write-Host "Checking internet connectivity..."
     $connected = $false
@@ -40,7 +42,7 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     # -------------------------------------------------------------------------
     # Install VS Code
     # -------------------------------------------------------------------------
-    $url  = "https://update.code.visualstudio.com/latest/win32-x64/stable"
+    $url  = $VSCodeUrl
     $dest = "C:\Windows\Temp\VSCodeSetup.exe"
 
     Write-Host "Downloading Visual Studio Code..."
@@ -206,4 +208,4 @@ $extCommands
     Write-Host "VS Code extensions installed."
     Write-Host "VS Code configuration complete."
 
-} -ArgumentList $Extensions, "$($Config.DomainNetBIOS)\$($Config.LabUserName)"
+} -ArgumentList $Extensions, "$($Config.DomainNetBIOS)\$($Config.LabUserName)", $vsCodeUrl
