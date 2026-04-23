@@ -337,7 +337,7 @@ and the `-Workloads` parameter on Visual Studio can be omitted to use the defaul
 $config = Get-Content .\config.json | ConvertFrom-Json
 $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlwork01'
 
-# Install with default extensions (ms-mssql.mssql, PowerShell, GitLens, etc.)
+# Install with default extensions (ms-mssql.mssql,ms-python.python,ms-vscode.powershell,eamodio.gitlens)
 .\08-Install-VSCode.ps1 -VMDef $vm -Config $config
 
 # Override extensions for a one-off run
