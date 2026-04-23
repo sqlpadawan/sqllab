@@ -5,7 +5,7 @@ param(
     # Space-separated list of extension IDs to install.
     # Find IDs on the VS Code marketplace - format is Publisher.ExtensionName
     # Defaults to a set useful for a SQL/dev lab.
-    [string]$Extensions = "ms-mssql.mssql ms-python.python ms-vscode.powershell eamodio.gitlens streetsidesoftware.code-spell-checker"
+    [string]$Extensions = "ms-mssql.mssql ms-python.python ms-vscode.powershell eamodio.gitlens"
 )
 
 if ($WhatIfPreference) {
@@ -140,14 +140,20 @@ public class UserProfileHelper {
         Write-Warning "Profile API call failed: $_ - continuing anyway."
     }
 
-    # Wait up to 15 seconds for the profile directory to appear
-    $profDir = "C:\Users\$username"
-    $profDeadline = (Get-Date).AddSeconds(15)
-    while ((Get-Date) -lt $profDeadline -and -not (Test-Path $profDir)) {
-        Start-Sleep -Seconds 2
+    # Wait up to 60 seconds for the profile to be fully initialized.
+    # The profile directory can appear before Windows finishes writing NTUSER.DAT,
+    # which causes code.cmd to fail silently when the task runs too early.
+    # Waiting for NTUSER.DAT ensures the hive is fully written before proceeding.
+    $profDir  = "C:\Users\$username"
+    $ntuser   = "$profDir\NTUSER.DAT"
+    $profDeadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $profDeadline -and -not (Test-Path $ntuser)) {
+        Start-Sleep -Seconds 3
     }
-    if (Test-Path $profDir) {
-        Write-Host "Lab user profile ready at $profDir"
+    if (Test-Path $ntuser) {
+        Write-Host "Lab user profile fully initialized at $profDir"
+    } elseif (Test-Path $profDir) {
+        Write-Warning "Profile directory exists but NTUSER.DAT not found at $ntuser - proceeding anyway."
     } else {
         Write-Warning "Profile not found at $profDir - extensions may install to wrong location."
     }
@@ -170,9 +176,11 @@ public class UserProfileHelper {
     $extList = $Extensions -split ' ' | Where-Object { $_ -ne '' }
     Write-Host "Installing $($extList.Count) extension(s) as $LabUser..."
 
-    # Build a script that installs each extension and writes a done marker
+    # Build a script that installs each extension, logs all output, and writes a done marker.
+    # Logging to VSCodeExt.log lets us diagnose silent failures on subsequent runs.
+    $logFile = 'C:\Windows\Temp\VSCodeExt.log'
     $extCommands = ($extList | ForEach-Object {
-        "& '$codeCli' --install-extension $_ --force 2>&1"
+        "& '$codeCli' --install-extension $_ --force 2>&1 | Out-File '$logFile' -Append"
     }) -join "`n"
 
     $taskScript = @"
@@ -189,6 +197,7 @@ $extCommands
         -Principal $principal -Settings $settings -Force | Out-Null
 
     Remove-Item 'C:\Windows\Temp\VSCodeExtDone.txt' -Force -ErrorAction SilentlyContinue
+    Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
     Start-ScheduledTask -TaskName 'VSCodeExtInstall'
     Write-Host "Extension install task started - waiting for completion..."
@@ -204,6 +213,13 @@ $extCommands
 
     Unregister-ScheduledTask -TaskName 'VSCodeExtInstall' -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item 'C:\Windows\Temp\VSCodeExtDone.txt' -Force -ErrorAction SilentlyContinue
+
+    # Report what the task logged - surfaces any silent failures
+    if (Test-Path $logFile) {
+        Write-Host "Extension install log:"
+        Get-Content $logFile
+        Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host "VS Code extensions installed."
     Write-Host "VS Code configuration complete."
