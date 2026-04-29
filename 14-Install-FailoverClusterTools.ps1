@@ -17,7 +17,7 @@ if ($WhatIfPreference) {
 
 $invokeParams = @{ ComputerName = $VMDef.IP }
 
-if (Get-Command Get-Secret -ErrorAction SilentlyContinue) {
+if (Get-SecretVault -Name $Config.SecretsVault -ErrorAction SilentlyContinue) {
     $invokeParams.Credential = New-Object PSCredential(
         "$($Config.DomainNetBIOS)\Administrator",
         (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
