@@ -173,6 +173,7 @@ try {
             )
             "VS Code"       = @("C:\Program Files\Microsoft VS Code\Code.exe")
             "Visual Studio" = @(
+                "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\devenv.exe",
                 "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\IDE\devenv.exe",
                 "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
             )
@@ -183,6 +184,14 @@ try {
             $found = $false
             foreach ($path in $checks[$app]) {
                 if (Test-Path $path) { $found = $true; break }
+            }
+            # Registry fallback for Visual Studio - VS registers in the WOW6432Node hive
+            if (-not $found -and $app -eq 'Visual Studio') {
+                $vsReg = Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' `
+                    -ErrorAction SilentlyContinue |
+                    Get-ItemProperty -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DisplayName -like 'Visual Studio*Community*' }
+                if ($vsReg) { $found = $true }
             }
             if ($found) {
                 Write-Host "  [PASS] $app - installed" -ForegroundColor Green
@@ -206,7 +215,8 @@ if ($clusterVMs) {
             $result = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
                 -ErrorAction Stop -ScriptBlock {
                 $f = Get-WindowsFeature Failover-Clustering
-                return $f.InstallState
+                # InstallState is an enum - return as string for reliable comparison
+                return $f.InstallState.ToString()
             }
             if ($result -eq 'Installed') {
                 Write-Pass "$($vm.Name) - Failover-Clustering installed"
@@ -227,50 +237,77 @@ if ($clusterVMs) {
 # ---------------------------------------------------------------------------
 if ($config.Clusters) {
     Write-Check "[8/9] Failover cluster health..."
+
+    # Ensure the FailoverClusters module is available on the host.
+    # RSAT-Clustering-PowerShell is not installed by default on Hyper-V hosts.
+    if (-not (Get-Module -ListAvailable FailoverClusters)) {
+        Write-Host "  Installing RSAT Failover Clustering PowerShell tools on host..."
+        $osInfo = Get-CimInstance Win32_OperatingSystem
+        if ($osInfo.ProductType -eq 1) {
+            # Windows 10/11 - use Add-WindowsCapability
+            Add-WindowsCapability -Online -Name 'Rsat.FailoverCluster.Management.Tools~~~~0.0.1.0' `
+                -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            # Windows Server - use Add-WindowsFeature
+            Add-WindowsFeature RSAT-Clustering-PowerShell -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+
     foreach ($clusterDef in $config.Clusters) {
         $primaryRole = $roles | Where-Object { $_.Name -eq $clusterDef.Nodes[0] }
         try {
-            $result = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
-                -ErrorAction Stop -ScriptBlock {
-                param($ClusterName, $WitnessShare)
-
-                $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
-                if (-not $cluster) { return [PSCustomObject]@{ Found = $false } }
-
-                $nodes   = Get-ClusterNode -Cluster $ClusterName |
-                    Select-Object Name, State
-                $quorum  = Get-ClusterQuorum -Cluster $ClusterName
-
-                return [PSCustomObject]@{
-                    Found       = $true
-                    ClusterState = (Get-ClusterGroup -Cluster $ClusterName -Name 'Cluster Group').State
-                    Nodes       = $nodes
-                    QuorumType  = $quorum.QuorumType
-                    QuorumRes   = $quorum.QuorumResource
-                }
-            } -ArgumentList $clusterDef.Name, $clusterDef.WitnessShare
-
-            if (-not $result.Found) {
-                Write-Fail "$($clusterDef.Name) - cluster not found"
+            if (Get-Module -ListAvailable FailoverClusters) {
+                # Query directly from host using cluster IP
+                $cluster = Get-Cluster -Name $clusterDef.IP -ErrorAction Stop
             } else {
-                if ($result.ClusterState -eq 'Online') {
-                    Write-Pass "$($clusterDef.Name) - cluster online"
-                } else {
-                    Write-Fail "$($clusterDef.Name) - cluster state is '$($result.ClusterState)'"
+                # RSAT not available - remote into primary node and query locally.
+                # Use -Cluster with the cluster IP to avoid name resolution issues.
+                $cluster = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
+                    -ErrorAction Stop -ScriptBlock {
+                    param($ClusterIP)
+                    Get-Cluster -Name $ClusterIP -ErrorAction SilentlyContinue
+                } -ArgumentList $clusterDef.IP
+            }
+
+            if (-not $cluster) {
+                Write-Fail "$($clusterDef.Name) - cluster not found at $($clusterDef.IP)"
+                continue
+            }
+
+            # Run all cluster queries on the primary node to avoid RSAT dependency
+            $clusterResult = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
+                -ErrorAction Stop -ScriptBlock {
+                param($ClusterIP)
+                $grp    = Get-ClusterGroup    -Cluster $ClusterIP -Name 'Cluster Group' -ErrorAction SilentlyContinue
+                $nodes  = Get-ClusterNode     -Cluster $ClusterIP | Select-Object Name, @{N='State';E={$_.State.ToString()}}
+                $quorum = Get-ClusterQuorum   -Cluster $ClusterIP
+                return [PSCustomObject]@{
+                    ClusterState = $grp.State.ToString()
+                    Nodes        = $nodes
+                    QuorumType   = $quorum.QuorumType.ToString()
                 }
-                foreach ($node in $result.Nodes) {
-                    if ($node.State -eq 'Up') {
-                        Write-Pass "$($clusterDef.Name) - node $($node.Name) is Up"
-                    } else {
-                        Write-Fail "$($clusterDef.Name) - node $($node.Name) state is '$($node.State)'"
-                    }
-                }
-                if ($result.QuorumType -like '*FileShare*') {
-                    Write-Pass "$($clusterDef.Name) - file share witness configured"
+            } -ArgumentList $clusterDef.IP
+
+            if ($clusterResult.ClusterState -eq 'Online') {
+                Write-Pass "$($clusterDef.Name) - cluster online"
+            } else {
+                Write-Fail "$($clusterDef.Name) - cluster state is '$($clusterResult.ClusterState)'"
+            }
+
+            foreach ($node in $clusterResult.Nodes) {
+                if ($node.State -eq 'Up') {
+                    Write-Pass "$($clusterDef.Name) - node $($node.Name) is Up"
                 } else {
-                    Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($result.QuorumType)"
+                    Write-Fail "$($clusterDef.Name) - node $($node.Name) state is '$($node.State)'"
                 }
             }
+
+            if ($clusterResult.QuorumType -like '*FileShare*') {
+                Write-Pass "$($clusterDef.Name) - file share witness configured"
+            } else {
+                Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($clusterResult.QuorumType)"
+            }
+
         } catch {
             Write-Fail "$($clusterDef.Name) - could not query cluster: $_"
         }

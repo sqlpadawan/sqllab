@@ -24,15 +24,40 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
     Import-Module SqlServer -ErrorAction Stop
 
-    # Check current state - skip if already enabled
-    $instance = Get-Item 'SQLSERVER:\SQL\localhost\DEFAULT' -ErrorAction Stop
-    if ($instance.IsHadrEnabled) {
+    # Resolve the actual instance registry hive name dynamically.
+    # Avoids hardcoding version-specific keys like MSSQL17.MSSQLSERVER.
+    $sqlRootKey  = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
+    $hivePrefix  = (Get-ItemProperty "$sqlRootKey\Instance Names\SQL" -ErrorAction Stop).MSSQLSERVER
+    # SQL Server 2025 stores the HADR flag at:
+    #   HKLM:\...\<hive>\MSSQLServer\HADR\HADR_Enabled
+    # Earlier versions used:
+    #   HKLM:\...\<hive>\MSSQLServer\SuperSocketNetLib\DatabaseMirroring\IsHadrEnabled
+    # Check both so the script works across versions.
+    $hadrPath    = "$sqlRootKey\$hivePrefix\MSSQLServer\HADR"
+    $legacyPath  = "$sqlRootKey\$hivePrefix\MSSQLServer\SuperSocketNetLib\DatabaseMirroring"
+
+    Write-Host "Instance hive: $hivePrefix"
+
+    # Check current HADR state via registry
+    $alreadyEnabled = $false
+    if (Test-Path $hadrPath) {
+        $alreadyEnabled = (Get-ItemProperty $hadrPath -ErrorAction SilentlyContinue).HADR_Enabled -eq 1
+    } elseif (Test-Path $legacyPath) {
+        $alreadyEnabled = (Get-ItemProperty $legacyPath -ErrorAction SilentlyContinue).IsHadrEnabled -eq 1
+    }
+
+    if ($alreadyEnabled) {
         Write-Host "Always On is already enabled on this instance - skipping."
         return
     }
 
+    # Use the machine name as the server instance.
+    # 'localhost' can be misinterpreted by the SQLSERVER: PSDrive provider
+    # as a path component in PSRemoting contexts, causing silent failures.
+    $serverInstance = $env:COMPUTERNAME
+
     Write-Host "Enabling Always On (this will restart the SQL Server service)..."
-    Enable-SqlAlwaysOn -ServerInstance 'localhost' -Force -ErrorAction Stop
+    Enable-SqlAlwaysOn -ServerInstance $serverInstance -Force -ErrorAction Stop
 
     # Poll until SQL Server service returns to Running state
     Write-Host "Waiting for SQL Server service to restart..."
@@ -53,14 +78,16 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
     Write-Host "SQL Server service is running."
 
-    # Re-import the module after service restart to refresh the provider
-    Remove-Module SqlServer -ErrorAction SilentlyContinue
-    Import-Module SqlServer -ErrorAction Stop
+    # Verify via registry - ground truth, no provider caching issues
+    $verified = $false
+    if (Test-Path $hadrPath) {
+        $verified = (Get-ItemProperty $hadrPath -ErrorAction SilentlyContinue).HADR_Enabled -eq 1
+    } elseif (Test-Path $legacyPath) {
+        $verified = (Get-ItemProperty $legacyPath -ErrorAction SilentlyContinue).IsHadrEnabled -eq 1
+    }
 
-    # Verify Always On is now enabled
-    $instance = Get-Item 'SQLSERVER:\SQL\localhost\DEFAULT' -ErrorAction Stop
-    if (-not $instance.IsHadrEnabled) {
-        throw "Always On reports as disabled after enablement. Check SQL Server error log."
+    if (-not $verified) {
+        throw "Always On registry flag not set after enablement. Check SQL Server error log at C:\Program Files\Microsoft SQL Server\$hivePrefix\MSSQL\Log\ERRORLOG"
     }
 
     Write-Host "Always On Availability Groups enabled and verified."
