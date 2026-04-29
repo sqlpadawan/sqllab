@@ -98,6 +98,7 @@ wherever your ISOs actually live before running any scripts.
 | `08-Install-VSCode.ps1` | Installs VS Code, disables AI features, installs extensions on sqlwork01 |
 | `09-Install-VisualStudio.ps1` | Installs Visual Studio 2026 Community (.NET desktop + SQL data tools) on sqlwork01 |
 | `10-Install-GitHub.ps1` | Installs GitHub Desktop, Git for Windows, and applies git config on sqlwork01 |
+| `11-Install-SqlServerModule.ps1` | Installs the SqlServer PowerShell module from PSGallery on sqlwork01 |
 | `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
 | `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
 | `Remove-Lab.ps1` | Tears down all VMs and disks cleanly |
@@ -247,7 +248,7 @@ The orchestrator runs six stages in order:
 | 3 | Promotes sqllabdc01 as the sqllab.local domain controller |
 | 4 | Configures RRAS (NAT + routing) on sqllabdc01 |
 | 5 | Joins all member VMs and the workstation to the domain |
-| 6 | Installs SQL Server on sqlsrv01-04; installs SSMS, VS Code, Visual Studio, and GitHub on sqlwork01 |
+| 6 | Installs SQL Server on sqlsrv01-04; installs SSMS, VS Code, Visual Studio, GitHub, and the SqlServer PowerShell module on sqlwork01 |
 
 Total deployment time is approximately 60-90 minutes.
 
@@ -349,6 +350,9 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 
 # Install GitHub Desktop, Git CLI, and apply git config from config.json
 .\10-Install-GitHub.ps1 -VMDef $vm -Config $config
+
+# Install the SqlServer PowerShell module from PSGallery
+.\11-Install-SqlServerModule.ps1 -VMDef $vm -Config $config
 ```
 
 > **Note:** GitHub Desktop requires interactive sign-in the first time it is opened.
