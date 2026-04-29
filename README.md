@@ -265,7 +265,7 @@ override either path on the command line:
     -WS2025ISO  "D:\ISOs\WindowsServer2025.iso"
 ```
 
-The orchestrator runs eight stages in order:
+The orchestrator runs six stages in order:
 
 | Stage | What happens |
 |---|---|
@@ -275,16 +275,12 @@ The orchestrator runs eight stages in order:
 | 4 | Configures RRAS (NAT + routing) on sqllabdc01 |
 | 5 | Joins all member VMs and the workstation to the domain |
 | 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, SqlServer module, and Failover Cluster tools on sqlwork01 |
-| 7 | Creates failover clusters sqlcluster-dca and sqlcluster-dcb from sqlwork01; creates and permissions file share witnesses on sqllabdc01 |
-| 8 | Enables Always On Availability Groups on all SQL VMs and opens AG endpoint port 5022 |
 
-> **Note:** Stage 7 (cluster creation) runs all cluster cmdlets from `sqlwork01`
-> because `sqlwork01` is domain-joined and has a valid Kerberos token. This lets
-> `New-Cluster` authenticate to all SQL nodes without credential delegation or
-> CredSSP. The Hyper-V host is not domain-joined so it cannot run cluster cmdlets
-> directly.
+> **Note:** `Deploy-Lab.ps1` stops after stage 6. Cluster creation and Always On
+> must be completed manually — see Steps 6 and 7 below. The Hyper-V host is not
+> domain-joined so cluster cmdlets cannot run from it directly.
 
-Total deployment time is approximately 3-3.5 hours.
+Total time for stages 1-6 is approximately 2.5-3 hours.
 
 #### Preview mode (no changes made)
 
@@ -300,21 +296,49 @@ Total deployment time is approximately 3-3.5 hours.
 
 ---
 
-### Step 6 - Cluster creation note
+### Step 6 - Cluster creation (run from sqlwork01)
 
-`Deploy-Lab.ps1` handles cluster creation automatically in stage 7. It drives
-all cluster cmdlets through `sqlwork01` via PSRemoting, which is the correct
-execution point because `sqlwork01` is domain-joined and has a valid Kerberos
-token to reach all SQL nodes.
+Log into `sqlwork01` as `sqlpadawan` and open a **64-bit PowerShell session**:
 
-You do not need to do anything manually here during a full deployment — this
-note is to explain why stage 7 targets `sqlwork01` internally. If you need to
-re-run cluster creation standalone after a failed deployment, see
-[Create a cluster manually](#create-a-cluster-manually) below.
+```powershell
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+```
+
+Navigate to the sqllab project directory and run:
+
+```powershell
+cd C:\Users\sqlpadawan\source\sqllab
+$config = Get-Content .\config.json | ConvertFrom-Json
+
+# Install Failover Cluster tools (already done if deployed via Deploy-Lab.ps1)
+$vm = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlwork01'
+.\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config
+
+# Create both clusters
+foreach ($cluster in $config.Clusters) {
+    .\12-New-LabCluster.ps1 -ClusterDef $cluster -Config $config
+}
+```
+
+Expected duration: 10-15 minutes per cluster.
 
 ---
 
-### Step 7 - Post-deployment verification
+### Step 7 - Enable Always On (run from the Hyper-V host)
+
+Back on the Hyper-V host, run:
+
+```powershell
+$config = Get-Content .\config.json | ConvertFrom-Json
+$roles  = Get-Content .\roles.json  | ConvertFrom-Json
+foreach ($vm in $roles | Where-Object { $_.Clustering -eq $true -and $_.Role -eq 'SQL' }) {
+    .\13-Enable-AlwaysOn.ps1 -VMDef $vm -Config $config
+}
+```
+
+---
+
+### Step 8 - Post-deployment verification
 
 From `sqlwork01`, open SSMS and connect to each SQL Server:
 
@@ -414,9 +438,14 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 ### Create a cluster manually
 
 Each cluster definition is read from the `Clusters` array in `config.json`.
-To create a single cluster standalone:
+Run from `sqlwork01` as `sqlpadawan` in a **64-bit PowerShell session** —
+the FailoverClusters module will not load in a 32-bit session.
 
 ```powershell
+# Launch 64-bit PowerShell if needed
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+
+# Then run from the sqllab project directory
 $config  = Get-Content .\config.json | ConvertFrom-Json
 $cluster = $config.Clusters | Where-Object Name -eq 'sqlcluster-dca'
 .\12-New-LabCluster.ps1 -ClusterDef $cluster -Config $config
