@@ -99,6 +99,8 @@ wherever your ISOs actually live before running any scripts.
 | `09-Install-VisualStudio.ps1` | Installs Visual Studio 2026 Community (.NET desktop + SQL data tools) on sqlwork01 |
 | `10-Install-GitHub.ps1` | Installs GitHub Desktop, Git for Windows, and applies git config on sqlwork01 |
 | `11-Install-SqlServerModule.ps1` | Installs the SqlServer PowerShell module from PSGallery on sqlwork01 |
+| `12-New-LabCluster.ps1` | Creates a Windows Server Failover Cluster, configures file share witness and quorum |
+| `13-Enable-AlwaysOn.ps1` | Enables Always On Availability Groups on a SQL Server instance and opens port 5022 |
 | `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
 | `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
 | `Remove-Lab.ps1` | Tears down all VMs and disks cleanly |
@@ -248,7 +250,9 @@ The orchestrator runs six stages in order:
 | 3 | Promotes sqllabdc01 as the sqllab.local domain controller |
 | 4 | Configures RRAS (NAT + routing) on sqllabdc01 |
 | 5 | Joins all member VMs and the workstation to the domain |
-| 6 | Installs SQL Server on sqlsrv01-04; installs SSMS, VS Code, Visual Studio, GitHub, and the SqlServer PowerShell module on sqlwork01 |
+| 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, and the SqlServer module on sqlwork01 |
+| 7 | Creates failover clusters sqlcluster-dca and sqlcluster-dcb; creates and permissions file share witnesses on sqllabdc01 |
+| 8 | Enables Always On Availability Groups on all SQL VMs and opens AG endpoint port 5022 |
 
 Total deployment time is approximately 60-90 minutes.
 
@@ -360,6 +364,27 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 > All other git settings (username, email, default branch) are applied automatically
 > from `config.json`.
 
+### Create a cluster manually
+
+Each cluster definition is read from the `Clusters` array in `config.json`.
+To create a single cluster standalone:
+
+```powershell
+$config  = Get-Content .\config.json | ConvertFrom-Json
+$cluster = $config.Clusters | Where-Object Name -eq 'sqlcluster-dca'
+.\12-New-LabCluster.ps1 -ClusterDef $cluster -Config $config
+```
+
+### Enable Always On on a single SQL VM
+
+Always On can only be enabled after the VM is a member of a Windows cluster.
+
+```powershell
+$config = Get-Content .\config.json | ConvertFrom-Json
+$vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlsrv01'
+.\13-Enable-AlwaysOn.ps1 -VMDef $vm -Config $config
+```
+
 ---
 
 ## Verifying the deployment
@@ -464,6 +489,7 @@ after the move.
 | DownloadURLs.SSMS | https://aka.ms/ssms/22/release/vs_SSMS.exe | SSMS 22 bootstrapper download URL |
 | DownloadURLs.VSCode | https://update.code.visualstudio.com/latest/win32-x64/stable | VS Code installer download URL |
 | DownloadURLs.VisualStudio | https://aka.ms/vs/18/Stable/vs_community.exe | Visual Studio 2026 Community bootstrapper download URL |
+| Clusters | array | List of failover cluster definitions. Each entry has Name, IP, Nodes (array of VM names), WitnessShare (UNC path), and WitnessPath (local path on sqllabdc01) |
 
 ### VS Code extensions
 
@@ -496,6 +522,7 @@ Find extension IDs on the VS Code marketplace - format is `Publisher.ExtensionNa
 | VCPU | Virtual CPU count |
 | NICs | Number of network adapters (2 for DC only) |
 | DiskSizeGB | OS disk size in GB (defaults to 64 if omitted) |
+| Clustering | true to install the Failover Clustering feature on the VM; omit or false to skip (defaults to false) |
 | PostConfig | Ordered list of post-config scripts to run |
 
 ### SQL Server install directories

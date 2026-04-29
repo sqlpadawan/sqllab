@@ -20,5 +20,27 @@
     "SSMS": "https://aka.ms/ssms/22/release/vs_SSMS.exe",
     "VSCode": "https://update.code.visualstudio.com/latest/win32-x64/stable",
     "VisualStudio": "https://aka.ms/vs/18/Stable/vs_community.exe"
-  }
+  },
+  "Clusters": [
+    {
+      "Name": "sqlcluster-dca",
+      "IP": "172.16.10.200",
+      "Nodes": [
+        "sqlsrv01",
+        "sqlsrv02"
+      ],
+      "WitnessShare": "\\\\sqllabdc01\\witness-dca",
+      "WitnessPath": "C:\\ClusterWitness\\witness-dca"
+    },
+    {
+      "Name": "sqlcluster-dcb",
+      "IP": "192.168.10.200",
+      "Nodes": [
+        "sqlsrv03",
+        "sqlsrv04"
+      ],
+      "WitnessShare": "\\\\sqllabdc01\\witness-dcb",
+      "WitnessPath": "C:\\ClusterWitness\\witness-dcb"
+    }
+  ]
 }

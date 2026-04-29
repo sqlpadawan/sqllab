@@ -128,3 +128,34 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
     Write-Host "SQL Server installation complete."
 } -ArgumentList $localISO
+
+# Install the SqlServer PowerShell module.
+# Required on SQL VMs for Always On enablement (13-Enable-AlwaysOn.ps1)
+# and general PowerShell-based SQL administration.
+Write-Host "[$($VMDef.Name)] Installing SqlServer PowerShell module..."
+Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+
+    # Ensure NuGet provider is present - required for Install-Module on Server 2025
+    if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+        Install-PackageProvider -Name NuGet -Force -Scope AllUsers | Out-Null
+        Write-Host "NuGet provider installed."
+    }
+
+    # Trust PSGallery to suppress confirmation prompts
+    if ((Get-PSRepository -Name PSGallery).InstallationPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        Write-Host "PSGallery set to Trusted."
+    }
+
+    Write-Host "Installing SqlServer module from PSGallery..."
+    Install-Module -Name SqlServer `
+                   -Force `
+                   -AllowClobber `
+                   -Scope AllUsers `
+                   -ErrorAction Stop
+
+    $ver = (Get-Module -ListAvailable SqlServer |
+        Sort-Object Version -Descending |
+        Select-Object -First 1).Version
+    Write-Host "SqlServer module installed. Version: $ver"
+}

@@ -52,6 +52,7 @@
     "VCPU": 4,
     "NICs": 1,
     "DiskSizeGB": 64,
+    "Clustering": true,
     "PostConfig": [
       "Join-Domain.ps1",
       "Install-SQL.ps1"
@@ -70,6 +71,7 @@
     "VCPU": 4,
     "NICs": 1,
     "DiskSizeGB": 64,
+    "Clustering": true,
     "PostConfig": [
       "Join-Domain.ps1",
       "Install-SQL.ps1"
@@ -88,6 +90,7 @@
     "VCPU": 4,
     "NICs": 1,
     "DiskSizeGB": 64,
+    "Clustering": true,
     "PostConfig": [
       "Join-Domain.ps1",
       "Install-SQL.ps1"
@@ -106,6 +109,7 @@
     "VCPU": 4,
     "NICs": 1,
     "DiskSizeGB": 64,
+    "Clustering": true,
     "PostConfig": [
       "Join-Domain.ps1",
       "Install-SQL.ps1"

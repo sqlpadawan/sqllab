@@ -158,7 +158,7 @@ foreach ($vm in $sqlVMs) {
 # ---------------------------------------------------------------------------
 # 6. Workstation software
 # ---------------------------------------------------------------------------
-Write-Check "[6/6] Workstation software..."
+Write-Check "[6/9] Workstation software..."
 $workIP = ($roles | Where-Object Name -eq 'sqlwork01').IP
 try {
     Invoke-Command -ComputerName $workIP -Credential $domainCred `
@@ -193,6 +193,122 @@ try {
     }
 } catch {
     Write-Fail "Could not connect to sqlwork01 to check software: $_"
+}
+
+# ---------------------------------------------------------------------------
+# 7. Failover Clustering feature
+# ---------------------------------------------------------------------------
+$clusterVMs = $roles | Where-Object { $_.Clustering -eq $true }
+if ($clusterVMs) {
+    Write-Check "[7/9] Failover Clustering feature..."
+    foreach ($vm in $clusterVMs) {
+        try {
+            $result = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
+                -ErrorAction Stop -ScriptBlock {
+                $f = Get-WindowsFeature Failover-Clustering
+                return $f.InstallState
+            }
+            if ($result -eq 'Installed') {
+                Write-Pass "$($vm.Name) - Failover-Clustering installed"
+            } else {
+                Write-Fail "$($vm.Name) - Failover-Clustering state is '$result' (expected Installed)"
+            }
+        } catch {
+            Write-Fail "$($vm.Name) - could not check clustering feature: $_"
+        }
+    }
+} else {
+    Write-Check "[7/9] Failover Clustering feature..."
+    Write-Host "  No VMs configured with Clustering:true - skipping." -ForegroundColor Gray
+}
+
+# ---------------------------------------------------------------------------
+# 8. Failover cluster health
+# ---------------------------------------------------------------------------
+if ($config.Clusters) {
+    Write-Check "[8/9] Failover cluster health..."
+    foreach ($clusterDef in $config.Clusters) {
+        $primaryRole = $roles | Where-Object { $_.Name -eq $clusterDef.Nodes[0] }
+        try {
+            $result = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
+                -ErrorAction Stop -ScriptBlock {
+                param($ClusterName, $WitnessShare)
+
+                $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
+                if (-not $cluster) { return [PSCustomObject]@{ Found = $false } }
+
+                $nodes   = Get-ClusterNode -Cluster $ClusterName |
+                    Select-Object Name, State
+                $quorum  = Get-ClusterQuorum -Cluster $ClusterName
+
+                return [PSCustomObject]@{
+                    Found       = $true
+                    ClusterState = (Get-ClusterGroup -Cluster $ClusterName -Name 'Cluster Group').State
+                    Nodes       = $nodes
+                    QuorumType  = $quorum.QuorumType
+                    QuorumRes   = $quorum.QuorumResource
+                }
+            } -ArgumentList $clusterDef.Name, $clusterDef.WitnessShare
+
+            if (-not $result.Found) {
+                Write-Fail "$($clusterDef.Name) - cluster not found"
+            } else {
+                if ($result.ClusterState -eq 'Online') {
+                    Write-Pass "$($clusterDef.Name) - cluster online"
+                } else {
+                    Write-Fail "$($clusterDef.Name) - cluster state is '$($result.ClusterState)'"
+                }
+                foreach ($node in $result.Nodes) {
+                    if ($node.State -eq 'Up') {
+                        Write-Pass "$($clusterDef.Name) - node $($node.Name) is Up"
+                    } else {
+                        Write-Fail "$($clusterDef.Name) - node $($node.Name) state is '$($node.State)'"
+                    }
+                }
+                if ($result.QuorumType -like '*FileShare*') {
+                    Write-Pass "$($clusterDef.Name) - file share witness configured"
+                } else {
+                    Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($result.QuorumType)"
+                }
+            }
+        } catch {
+            Write-Fail "$($clusterDef.Name) - could not query cluster: $_"
+        }
+    }
+} else {
+    Write-Check "[8/9] Failover cluster health..."
+    Write-Host "  No clusters defined in config.json - skipping." -ForegroundColor Gray
+}
+
+# ---------------------------------------------------------------------------
+# 9. Always On enabled
+# ---------------------------------------------------------------------------
+$alwaysOnVMs = $roles | Where-Object { $_.Clustering -eq $true -and $_.Role -eq 'SQL' }
+if ($alwaysOnVMs) {
+    Write-Check "[9/9] Always On Availability Groups..."
+    foreach ($vm in $alwaysOnVMs) {
+        try {
+            $enabled = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
+                -ErrorAction Stop -ScriptBlock {
+                if (-not (Get-Module -ListAvailable SqlServer)) { return $null }
+                Import-Module SqlServer -ErrorAction Stop
+                $inst = Get-Item 'SQLSERVER:\SQL\localhost\DEFAULT' -ErrorAction Stop
+                return $inst.IsHadrEnabled
+            }
+            if ($null -eq $enabled) {
+                Write-Fail "$($vm.Name) - SqlServer module not found"
+            } elseif ($enabled) {
+                Write-Pass "$($vm.Name) - Always On enabled"
+            } else {
+                Write-Fail "$($vm.Name) - Always On is disabled"
+            }
+        } catch {
+            Write-Fail "$($vm.Name) - could not check Always On: $_"
+        }
+    }
+} else {
+    Write-Check "[9/9] Always On Availability Groups..."
+    Write-Host "  No SQL VMs with Clustering:true found - skipping." -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------

@@ -322,6 +322,55 @@ if (-not `$existing) {
 
 } -ArgumentList $vmIP, $vmPrefix, $vmGateway, $vmDNS, $VMDef.Role
 
+# Install Failover Clustering feature if requested.
+# Uses PowerShell Direct (Hyper-V bus) since WinRM is not yet confirmed reachable.
+# A reboot is triggered automatically if Windows requires one after feature install.
+$enableClustering = if ($null -ne $VMDef.Clustering) { [bool]$VMDef.Clustering } else { $false }
+if ($enableClustering) {
+    Write-Host "[$($VMDef.Name)] Installing Failover Clustering feature..."
+    $clusterResult = Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
+        $result = Install-WindowsFeature Failover-Clustering -IncludeManagementTools
+        return [PSCustomObject]@{
+            Success       = $result.Success
+            RestartNeeded = $result.RestartNeeded.Value__  # 0=No, 1=Yes, 2=Maybe
+            FeatureResult = $result.FeatureResult
+        }
+    }
+
+    if (-not $clusterResult.Success) {
+        Write-Error "[$($VMDef.Name)] Failover Clustering feature install failed."
+    } else {
+        Write-Host "[$($VMDef.Name)] Failover Clustering installed. RestartNeeded: $($clusterResult.RestartNeeded)"
+
+        if ($clusterResult.RestartNeeded -ne 0) {
+            Write-Host "[$($VMDef.Name)] Reboot required - restarting VM..."
+            Invoke-Command -VMName $VMDef.Name -Credential $localCred -ScriptBlock {
+                Restart-Computer -Force
+            }
+
+            Write-Host "[$($VMDef.Name)] Waiting for VM to come back up via PowerShell Direct..."
+            Start-Sleep -Seconds 30
+            $deadline = (Get-Date).AddMinutes(10)
+            $back = $false
+            while ((Get-Date) -lt $deadline) {
+                try {
+                    Invoke-Command -VMName $VMDef.Name -Credential $localCred `
+                        -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop | Out-Null
+                    $back = $true
+                    break
+                } catch {
+                    Start-Sleep -Seconds 15
+                }
+            }
+            if (-not $back) {
+                Write-Error "[$($VMDef.Name)] VM did not come back online within 10 minutes after clustering reboot."
+            } else {
+                Write-Host "[$($VMDef.Name)] VM is back online after clustering reboot."
+            }
+        }
+    }
+}
+
 # Only poll WinRM for VMs the host can reach directly (172.16.10.x subnet).
 # VMs on 192.168.10.x route through RRAS which isn't configured until stage 4,
 # so skip the wait for those - they will be reachable after stage 4 completes.
