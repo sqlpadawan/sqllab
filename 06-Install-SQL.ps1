@@ -137,7 +137,7 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
     # Ensure NuGet provider is present - required for Install-Module on Server 2025
     if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-        Install-PackageProvider -Name NuGet -Force -Scope AllUsers | Out-Null
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers -Confirm:$false | Out-Null
         Write-Host "NuGet provider installed."
     }
 
