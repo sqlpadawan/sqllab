@@ -9,18 +9,24 @@ if ($WhatIfPreference) {
     return
 }
 
-$domainCred = New-Object PSCredential(
-    "$($Config.DomainNetBIOS)\Administrator",
-    (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+# This script is designed to run from two contexts:
+#   1. From the Hyper-V host during Deploy-Lab.ps1 - uses vault credentials
+#   2. From sqlwork01 directly - uses current domain user token (no vault needed)
+# When running from sqlwork01 as a domain admin, omit -Credential so Kerberos
+# handles authentication automatically.
+
+$invokeParams = @{ ComputerName = $VMDef.IP }
+
+if (Get-Command Get-Secret -ErrorAction SilentlyContinue) {
+    $invokeParams.Credential = New-Object PSCredential(
+        "$($Config.DomainNetBIOS)\Administrator",
+        (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+}
 
 Write-Host "[$($VMDef.Name)] Installing Failover Cluster management tools..."
 
-Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+Invoke-Command @invokeParams -ScriptBlock {
 
-    # RSAT-Clustering-PowerShell provides the FailoverClusters module including
-    # New-Cluster, Get-Cluster, Set-ClusterQuorum, and related cmdlets.
-    # Required on sqlwork01 so cluster creation and management can be driven
-    # from within the domain without double-hop credential issues.
     $feature = Get-WindowsFeature RSAT-Clustering-PowerShell -ErrorAction SilentlyContinue
     if ($feature -and $feature.InstallState.ToString() -eq 'Installed') {
         Write-Host "RSAT-Clustering-PowerShell already installed - skipping."
@@ -39,7 +45,6 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
         throw "Failed to install RSAT-Clustering-PowerShell."
     }
 
-    # Verify the module is now available
     if (Get-Module -ListAvailable FailoverClusters) {
         Write-Host "FailoverClusters module confirmed available."
     } else {

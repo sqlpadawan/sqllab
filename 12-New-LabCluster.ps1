@@ -4,14 +4,16 @@ param(
     [Parameter(Mandatory)][PSCustomObject]$Config
 )
 
+# This script is designed to run from sqlwork01 as a domain admin user.
+# sqlwork01 is domain-joined so Kerberos handles authentication to all
+# lab VMs automatically - no credential parameters or vault access needed.
+# When called from Deploy-Lab.ps1 on the Hyper-V host, it remotes into
+# sqlwork01 first and sqlwork01 then reaches the SQL nodes in a single hop.
+
 if ($WhatIfPreference) {
     Write-Host "[$($ClusterDef.Name)] WhatIf: would run $(Split-Path $PSCommandPath -Leaf)"
     return
 }
-
-$domainCred = New-Object PSCredential(
-    "$($Config.DomainNetBIOS)\Administrator",
-    (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
 
 $clusterName  = $ClusterDef.Name
 $clusterIP    = $ClusterDef.IP
@@ -20,18 +22,23 @@ $shareName    = ($ClusterDef.WitnessShare -split '\\' | Where-Object { $_ -ne ''
 $witnessPath  = $ClusterDef.WitnessPath
 $witnessShare = $ClusterDef.WitnessShare
 
-# Resolve roles
-$roles       = Get-Content (Join-Path $PSScriptRoot "roles.json") | ConvertFrom-Json
+# Resolve roles - handle both running from sqlwork01 and from the host
+$rolesPath = if (Test-Path (Join-Path $PSScriptRoot "roles.json")) {
+    Join-Path $PSScriptRoot "roles.json"
+} else {
+    throw "roles.json not found. Run this script from the sqllab project directory."
+}
+$roles       = Get-Content $rolesPath | ConvertFrom-Json
 $nodeRoles   = $roles | Where-Object { $_.Name -in $nodes }
 $dcRole      = $roles | Where-Object { $_.Role -eq 'DC' }
-$workstation = $roles | Where-Object { $_.Name -eq 'sqlwork01' }
 
 # ---------------------------------------------------------------------------
 # Phase 1 - Create witness share on sqllabdc01
+# No -Credential needed - Kerberos from sqlwork01 handles auth
 # ---------------------------------------------------------------------------
 Write-Host "[$clusterName] Creating witness share on $($dcRole.Name)..."
 
-Invoke-Command -ComputerName $dcRole.IP -Credential $domainCred -ScriptBlock {
+Invoke-Command -ComputerName $dcRole.Name -ScriptBlock {
     param($WitnessPath, $ShareName, $DomainNetBIOS)
 
     if (-not (Test-Path $WitnessPath)) {
@@ -69,69 +76,52 @@ Invoke-Command -ComputerName $dcRole.IP -Credential $domainCred -ScriptBlock {
 } -ArgumentList $witnessPath, $shareName, $Config.DomainNetBIOS
 
 # ---------------------------------------------------------------------------
-# Phase 2 - Run Test-Cluster from sqlwork01.
-# sqlwork01 is domain-joined so Kerberos flows naturally to all SQL nodes.
-# No double-hop issue - this is a single hop from sqlwork01 to each node.
+# Phase 2 - Run Test-Cluster
+# Running directly on sqlwork01 - no remoting needed for this phase
 # ---------------------------------------------------------------------------
-Write-Host "[$clusterName] Running cluster validation from sqlwork01..."
+Write-Host "[$clusterName] Running cluster validation on nodes: $($nodes -join ', ')..."
 
-$blocked = Invoke-Command -ComputerName $workstation.IP -Credential $domainCred -ScriptBlock {
-    param($Nodes, $ClusterName)
+if (-not (Get-Module -ListAvailable FailoverClusters)) {
+    throw "FailoverClusters module not found. Run 14-Install-FailoverClusterTools.ps1 first."
+}
 
-    if (-not (Get-Module -ListAvailable FailoverClusters)) {
-        throw "FailoverClusters module not found on sqlwork01. Run 14-Install-FailoverClusterTools.ps1 first."
-    }
-
-    $reportPath = "C:\Windows\Temp\ClusterValidation-$ClusterName.html"
-    Write-Host "Running Test-Cluster on nodes: $($Nodes -join ', ')..."
-    $result  = Test-Cluster -Node $Nodes -ReportName $reportPath -ErrorAction SilentlyContinue
-    $blocked = ($result | Where-Object { $_.Status -eq 'Blocked' } | Measure-Object).Count
-    Write-Host "Validation complete. Blocked checks: $blocked"
-    return $blocked
-} -ArgumentList $nodes, $clusterName
+$reportPath = "C:\Windows\Temp\ClusterValidation-$clusterName.html"
+$result     = Test-Cluster -Node $nodes -ReportName $reportPath -ErrorAction SilentlyContinue
+$blocked    = ($result | Where-Object { $_.Status -eq 'Blocked' } | Measure-Object).Count
 
 if ($blocked -gt 0) {
-    Write-Error "[$clusterName] Cluster validation failed with $blocked blocked check(s). Aborting."
+    Write-Error "[$clusterName] Cluster validation failed with $blocked blocked check(s)."
+    Write-Error "[$clusterName] Review $reportPath for details."
+    Write-Error "[$clusterName] Aborting cluster creation."
     return
 }
 Write-Host "[$clusterName] Validation passed (storage warnings are expected in a VM lab)."
 
 # ---------------------------------------------------------------------------
-# Phase 3 - Create the cluster from sqlwork01.
-# Running New-Cluster from a domain-joined workstation gives it a proper
-# Kerberos token. It can authenticate to all nodes in a single hop without
-# any credential delegation or CredSSP required.
+# Phase 3 - Create the cluster
+# Running directly on sqlwork01 as domain admin - single hop to SQL nodes
+# Kerberos authenticates to all nodes without double-hop issues
 # ---------------------------------------------------------------------------
-Write-Host "[$clusterName] Creating cluster from sqlwork01 with IP $clusterIP..."
+Write-Host "[$clusterName] Creating cluster with IP $clusterIP..."
 
-Invoke-Command -ComputerName $workstation.IP -Credential $domainCred -ScriptBlock {
-    param($ClusterName, $ClusterIP, $Nodes)
-
-    if (-not (Get-Module -ListAvailable FailoverClusters)) {
-        throw "FailoverClusters module not found on sqlwork01."
-    }
-
-    $existing = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Host "Cluster '$ClusterName' already exists - skipping creation."
-        return
-    }
-
-    Write-Host "Creating cluster: $ClusterName ($ClusterIP)"
-    Write-Host "Nodes: $($Nodes -join ', ')"
-    New-Cluster -Name $ClusterName `
-                -Node $Nodes `
-                -StaticAddress $ClusterIP `
+$existing = Get-Cluster -Name $clusterName -ErrorAction SilentlyContinue
+if ($existing) {
+    Write-Host "Cluster '$clusterName' already exists - skipping creation."
+} else {
+    Write-Host "Creating cluster: $clusterName ($clusterIP)"
+    Write-Host "Nodes: $($nodes -join ', ')"
+    New-Cluster -Name $clusterName `
+                -Node $nodes `
+                -StaticAddress $clusterIP `
                 -NoStorage `
                 -ErrorAction Stop | Out-Null
-    Write-Host "Cluster '$ClusterName' created successfully."
-
-} -ArgumentList $clusterName, $clusterIP, $nodes
+    Write-Host "Cluster '$clusterName' created successfully."
+}
 
 # Ensure ClusSvc is running and set to automatic on all nodes
 Write-Host "[$clusterName] Ensuring cluster service is running on all nodes..."
 foreach ($nodeVM in $nodeRoles) {
-    Invoke-Command -ComputerName $nodeVM.IP -Credential $domainCred -ScriptBlock {
+    Invoke-Command -ComputerName $nodeVM.Name -ScriptBlock {
         $deadline = (Get-Date).AddMinutes(3)
         while ((Get-Date) -lt $deadline) {
             $svc = Get-Service ClusSvc -ErrorAction SilentlyContinue
@@ -154,7 +144,7 @@ Start-Sleep -Seconds 30
 # ---------------------------------------------------------------------------
 Write-Host "[$clusterName] Granting cluster computer object permissions on witness share..."
 
-Invoke-Command -ComputerName $dcRole.IP -Credential $domainCred -ScriptBlock {
+Invoke-Command -ComputerName $dcRole.Name -ScriptBlock {
     param($WitnessPath, $ShareName, $ClusterName, $DomainNetBIOS)
 
     $clusterAccount = "$DomainNetBIOS\$ClusterName`$"
@@ -194,16 +184,13 @@ Invoke-Command -ComputerName $dcRole.IP -Credential $domainCred -ScriptBlock {
 } -ArgumentList $witnessPath, $shareName, $clusterName, $Config.DomainNetBIOS
 
 # ---------------------------------------------------------------------------
-# Phase 5 - Configure file share witness quorum from sqlwork01
+# Phase 5 - Configure file share witness quorum
 # ---------------------------------------------------------------------------
 Write-Host "[$clusterName] Configuring file share witness quorum: $witnessShare"
 
-Invoke-Command -ComputerName $workstation.IP -Credential $domainCred -ScriptBlock {
-    param($ClusterName, $WitnessShare)
-    Set-ClusterQuorum -Cluster $ClusterName -FileShareWitness $WitnessShare -ErrorAction Stop | Out-Null
-    $quorum = Get-ClusterQuorum -Cluster $ClusterName
-    Write-Host "Quorum configured: $($quorum.QuorumType) -> $($quorum.QuorumResource)"
-} -ArgumentList $clusterName, $witnessShare
+Set-ClusterQuorum -Cluster $clusterName -FileShareWitness $witnessShare -ErrorAction Stop | Out-Null
+$quorum = Get-ClusterQuorum -Cluster $clusterName
+Write-Host "Quorum configured: $($quorum.QuorumType) -> $($quorum.QuorumResource)"
 
 Write-Host "[$clusterName] Cluster creation complete."
 Write-Host "[$clusterName]   Nodes   : $($nodes -join ', ')"
