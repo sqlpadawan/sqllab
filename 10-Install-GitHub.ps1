@@ -83,6 +83,11 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 & '$gitExe' config --global core.autocrlf      '$GitAutoCrlf'
 & '$gitExe' config --global core.editor        "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
 & '$gitExe' config --global push.defaultBranch current
+# Use Windows OpenSSH instead of Git's bundled ssh client.
+# Git for Windows ships its own ssh.exe which does not use the Windows
+# ssh-agent, causing authentication failures even when keys are loaded.
+# Pointing core.sshCommand at the Windows OpenSSH client fixes this.
+& '$gitExe' config --global core.sshCommand    'C:/Windows/System32/OpenSSH/ssh.exe'
 'done' | Out-File 'C:\Windows\Temp\GitConfigDone.txt' -Force
 "@
         $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($gitScript))

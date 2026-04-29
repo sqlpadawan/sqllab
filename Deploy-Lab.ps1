@@ -122,12 +122,13 @@ foreach ($vm in $members) {
     foreach ($script in $vm.PostConfig | Where-Object { $_ -ne 'Join-Domain.ps1' }) {
         Write-Host "  -> $($vm.Name) : $script"
         switch ($script) {
-            'Install-SQL.ps1'          { .\06-Install-SQL.ps1          -VMDef $vm -Config $config -SQLISOPath $SQLISOPath }
-            'Install-SSMS.ps1'         { .\07-Install-SSMS.ps1         -VMDef $vm -Config $config }
-            'Install-VSCode.ps1'       { .\08-Install-VSCode.ps1       -VMDef $vm -Config $config }
-            'Install-VisualStudio.ps1' { .\09-Install-VisualStudio.ps1 -VMDef $vm -Config $config }
-            'Install-GitHub.ps1'       { .\10-Install-GitHub.ps1       -VMDef $vm -Config $config }
-            'Install-WSL.ps1'          { .\11-Install-WSL.ps1          -VMDef $vm -Config $config }
+            'Install-SQL.ps1'                  { .\06-Install-SQL.ps1                  -VMDef $vm -Config $config -SQLISOPath $SQLISOPath }
+            'Install-SSMS.ps1'                 { .\07-Install-SSMS.ps1                 -VMDef $vm -Config $config }
+            'Install-VSCode.ps1'               { .\08-Install-VSCode.ps1               -VMDef $vm -Config $config }
+            'Install-VisualStudio.ps1'         { .\09-Install-VisualStudio.ps1         -VMDef $vm -Config $config }
+            'Install-GitHub.ps1'               { .\10-Install-GitHub.ps1               -VMDef $vm -Config $config }
+            'Install-SqlServerModule.ps1'      { .\11-Install-SqlServerModule.ps1      -VMDef $vm -Config $config }
+            'Install-FailoverClusterTools.ps1' { .\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config }
         }
     }
 }

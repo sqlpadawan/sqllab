@@ -36,7 +36,8 @@
       "Install-VSCode.ps1",
       "Install-VisualStudio.ps1",
       "Install-GitHub.ps1",
-      "Install-SqlServerModule.ps1"
+      "Install-SqlServerModule.ps1",
+      "Install-FailoverClusterTools.ps1"
     ]
   },
   {

@@ -101,6 +101,7 @@ wherever your ISOs actually live before running any scripts.
 | `11-Install-SqlServerModule.ps1` | Installs the SqlServer PowerShell module from PSGallery on sqlwork01 |
 | `12-New-LabCluster.ps1` | Creates a Windows Server Failover Cluster, configures file share witness and quorum |
 | `13-Enable-AlwaysOn.ps1` | Enables Always On Availability Groups on a SQL Server instance and opens port 5022 |
+| `14-Install-FailoverClusterTools.ps1` | Installs RSAT Failover Clustering PowerShell tools on sqlwork01 |
 | `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
 | `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
 | `Remove-Lab.ps1` | Tears down all VMs and disks cleanly |
@@ -214,10 +215,6 @@ override it for a one-off build, pass `-ISOPath` explicitly:
 > enabled, but requires a reboot before continuing. If prompted to reboot, do so
 > and re-run the deployment -- it will resume safely from the beginning.
 
-> **Note:** `Deploy-Lab.ps1` enables Hyper-V automatically if it is not already
-> enabled, but a reboot is required before the deployment can continue. If prompted
-> to reboot, do so and re-run - the deployment will resume safely.
-
 > Building each image takes 10-20 minutes depending on disk speed.
 
 ---
@@ -241,7 +238,7 @@ override either path on the command line:
     -WS2025ISO  "D:\ISOs\WindowsServer2025.iso"
 ```
 
-The orchestrator runs six stages in order:
+The orchestrator runs eight stages in order:
 
 | Stage | What happens |
 |---|---|
@@ -250,11 +247,17 @@ The orchestrator runs six stages in order:
 | 3 | Promotes sqllabdc01 as the sqllab.local domain controller |
 | 4 | Configures RRAS (NAT + routing) on sqllabdc01 |
 | 5 | Joins all member VMs and the workstation to the domain |
-| 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, and the SqlServer module on sqlwork01 |
-| 7 | Creates failover clusters sqlcluster-dca and sqlcluster-dcb; creates and permissions file share witnesses on sqllabdc01 |
+| 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, SqlServer module, and Failover Cluster tools on sqlwork01 |
+| 7 | Creates failover clusters sqlcluster-dca and sqlcluster-dcb from sqlwork01; creates and permissions file share witnesses on sqllabdc01 |
 | 8 | Enables Always On Availability Groups on all SQL VMs and opens AG endpoint port 5022 |
 
-Total deployment time is approximately 60-90 minutes.
+> **Note:** Stage 7 (cluster creation) runs all cluster cmdlets from `sqlwork01`
+> because `sqlwork01` is domain-joined and has a valid Kerberos token. This lets
+> `New-Cluster` authenticate to all SQL nodes without credential delegation or
+> CredSSP. The Hyper-V host is not domain-joined so it cannot run cluster cmdlets
+> directly.
+
+Total deployment time is approximately 3-3.5 hours.
 
 #### Preview mode (no changes made)
 
@@ -270,7 +273,21 @@ Total deployment time is approximately 60-90 minutes.
 
 ---
 
-### Step 5 - Post-deployment verification
+### Step 5 - Cluster creation note
+
+`Deploy-Lab.ps1` handles cluster creation automatically in stage 7. It drives
+all cluster cmdlets through `sqlwork01` via PSRemoting, which is the correct
+execution point because `sqlwork01` is domain-joined and has a valid Kerberos
+token to reach all SQL nodes.
+
+You do not need to do anything manually here during a full deployment — this
+note is to explain why stage 7 targets `sqlwork01` internally. If you need to
+re-run cluster creation standalone after a failed deployment, see
+[Create a cluster manually](#create-a-cluster-manually) below.
+
+---
+
+### Step 6 - Post-deployment verification
 
 From `sqlwork01`, open SSMS and connect to each SQL Server:
 
@@ -357,6 +374,9 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 
 # Install the SqlServer PowerShell module from PSGallery
 .\11-Install-SqlServerModule.ps1 -VMDef $vm -Config $config
+
+# Install Failover Cluster management tools (required for cluster creation)
+.\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config
 ```
 
 > **Note:** GitHub Desktop requires interactive sign-in the first time it is opened.
@@ -389,15 +409,14 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 
 ## Verifying the deployment
 
-Run the verification script from the host after deployment completes:
+Run the verification script from the host after deployment completes. This
+checks every layer of the lab in sequence — VM state, domain membership,
+network routing, SQL Server connectivity, workstation software, failover
+cluster health, and Always On status — and prints a pass/fail summary.
 
 ```powershell
 .\Verify-Lab.ps1
 ```
-
-This checks every layer of the lab in sequence - VM state, domain membership,
-network routing, SQL Server connectivity, and workstation software - and prints
-a pass/fail summary. Any failures include remediation hints.
 
 ---
 

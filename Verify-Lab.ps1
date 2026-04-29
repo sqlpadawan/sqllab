@@ -237,56 +237,40 @@ if ($clusterVMs) {
 # ---------------------------------------------------------------------------
 if ($config.Clusters) {
     Write-Check "[8/9] Failover cluster health..."
-
-    # Ensure the FailoverClusters module is available on the host.
-    # RSAT-Clustering-PowerShell is not installed by default on Hyper-V hosts.
-    if (-not (Get-Module -ListAvailable FailoverClusters)) {
-        Write-Host "  Installing RSAT Failover Clustering PowerShell tools on host..."
-        $osInfo = Get-CimInstance Win32_OperatingSystem
-        if ($osInfo.ProductType -eq 1) {
-            # Windows 10/11 - use Add-WindowsCapability
-            Add-WindowsCapability -Online -Name 'Rsat.FailoverCluster.Management.Tools~~~~0.0.1.0' `
-                -ErrorAction SilentlyContinue | Out-Null
-        } else {
-            # Windows Server - use Add-WindowsFeature
-            Add-WindowsFeature RSAT-Clustering-PowerShell -ErrorAction SilentlyContinue | Out-Null
-        }
-    }
-
+    $workstation = $roles | Where-Object { $_.Name -eq 'sqlwork01' }
     foreach ($clusterDef in $config.Clusters) {
-        $primaryRole = $roles | Where-Object { $_.Name -eq $clusterDef.Nodes[0] }
         try {
-            if (Get-Module -ListAvailable FailoverClusters) {
-                # Query directly from host using cluster IP
-                $cluster = Get-Cluster -Name $clusterDef.IP -ErrorAction Stop
-            } else {
-                # RSAT not available - remote into primary node and query locally.
-                # Use -Cluster with the cluster IP to avoid name resolution issues.
-                $cluster = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
-                    -ErrorAction Stop -ScriptBlock {
-                    param($ClusterIP)
-                    Get-Cluster -Name $ClusterIP -ErrorAction SilentlyContinue
-                } -ArgumentList $clusterDef.IP
-            }
-
-            if (-not $cluster) {
-                Write-Fail "$($clusterDef.Name) - cluster not found at $($clusterDef.IP)"
-                continue
-            }
-
-            # Run all cluster queries on the primary node to avoid RSAT dependency
-            $clusterResult = Invoke-Command -ComputerName $primaryRole.IP -Credential $domainCred `
+            # Run cluster queries from sqlwork01 - it is domain-joined so Kerberos
+            # flows naturally to the cluster nodes with no double-hop issues.
+            $clusterResult = Invoke-Command -ComputerName $workstation.IP -Credential $domainCred `
                 -ErrorAction Stop -ScriptBlock {
-                param($ClusterIP)
-                $grp    = Get-ClusterGroup    -Cluster $ClusterIP -Name 'Cluster Group' -ErrorAction SilentlyContinue
-                $nodes  = Get-ClusterNode     -Cluster $ClusterIP | Select-Object Name, @{N='State';E={$_.State.ToString()}}
-                $quorum = Get-ClusterQuorum   -Cluster $ClusterIP
+                param($ClusterName)
+
+                if (-not (Get-Module -ListAvailable FailoverClusters)) {
+                    return [PSCustomObject]@{ Found = $false; Reason = 'FailoverClusters module not found on sqlwork01' }
+                }
+
+                $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
+                if (-not $cluster) {
+                    return [PSCustomObject]@{ Found = $false; Reason = "Cluster '$ClusterName' not found" }
+                }
+
+                $grp    = Get-ClusterGroup  -Cluster $ClusterName -Name 'Cluster Group' -ErrorAction SilentlyContinue
+                $nodes  = Get-ClusterNode   -Cluster $ClusterName | Select-Object Name, @{ N='State'; E={ $_.State.ToString() } }
+                $quorum = Get-ClusterQuorum -Cluster $ClusterName
+
                 return [PSCustomObject]@{
+                    Found        = $true
                     ClusterState = $grp.State.ToString()
                     Nodes        = $nodes
                     QuorumType   = $quorum.QuorumType.ToString()
                 }
-            } -ArgumentList $clusterDef.IP
+            } -ArgumentList $clusterDef.Name
+
+            if (-not $clusterResult.Found) {
+                Write-Fail "$($clusterDef.Name) - $($clusterResult.Reason)"
+                continue
+            }
 
             if ($clusterResult.ClusterState -eq 'Online') {
                 Write-Pass "$($clusterDef.Name) - cluster online"
