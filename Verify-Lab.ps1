@@ -191,10 +191,10 @@ if ($config.Clusters) {
                     }
                 }
 
-                if ($quorum.QuorumType -like '*FileShare*') {
-                    Write-Pass "$($clusterDef.Name) - file share witness configured"
+                if ($quorum.QuorumResource -like '*File Share*' -or $quorum.QuorumResource -like '*Witness*') {
+                    Write-Pass "$($clusterDef.Name) - file share witness configured ($($quorum.QuorumResource))"
                 } else {
-                    Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($quorum.QuorumType)"
+                    Write-Warn "$($clusterDef.Name) - unexpected quorum resource: $($quorum.QuorumResource)"
                 }
 
             } catch {
