@@ -221,7 +221,7 @@ foreach ($vm in $members) {
                 }
             }
         } catch {
-            $errMsg = "FAILED: $label — $_"
+            $errMsg = "FAILED: $label - $_"
             Write-Warning $errMsg
             $postConfigErrors.Add($errMsg)
             # Continue with remaining scripts for this VM and other VMs.
