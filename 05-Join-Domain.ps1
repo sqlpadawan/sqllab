@@ -67,6 +67,10 @@ $deadline = (Get-Date).AddMinutes(10)
 while ((Get-Date) -lt $deadline) {
     if (Test-WSMan -ComputerName $VMDef.IP -ErrorAction SilentlyContinue) {
         Write-Host "[$($VMDef.Name)] Back online and domain-joined."
+        # Brief settle: the port being open does not mean wsmprovhost.exe is
+        # ready to spawn yet. Without this pause the next Invoke-Command in
+        # Deploy-Lab can hit error 1018 (WSMan host process failed to launch).
+        Start-Sleep -Seconds 15
         break
     }
     Start-Sleep -Seconds 15

@@ -30,6 +30,86 @@ if (-not (Test-Path $SQLISOPath)) {
     throw "SQL Server ISO not found: '$SQLISOPath'`nUpdate SQLISOPath in config.json or pass -SQLISOPath."
 }
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Invoke-WithRetry
+# Retries a script block up to $MaxAttempts times, waiting $DelaySec between
+# each attempt. Designed for transient WinRM / host-process failures (error
+# 1018, WinRMOperationAborted) that resolve on their own after a few seconds.
+#
+# Usage:
+#   Invoke-WithRetry -Label "sqlwork01 : Install-GitHub" -MaxAttempts 3 {
+#       .\10-Install-GitHub.ps1 -VMDef $vm -Config $config
+#   }
+function Invoke-WithRetry {
+    param(
+        [string]   $Label,
+        [scriptblock] $ScriptBlock,
+        [int]      $MaxAttempts = 3,
+        [int]      $DelaySec    = 30
+    )
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            & $ScriptBlock
+            return   # success - exit the loop
+        } catch {
+            $msg = $_.ToString()
+            # Only retry on known transient WinRM transport errors.
+            # Permanent failures (wrong password, script logic errors, etc.)
+            # are re-thrown immediately so they surface clearly.
+            $isTransient = $msg -match '1018' -or
+                           $msg -match 'WinRMOperationAborted' -or
+                           $msg -match 'WSMan service could not launch' -or
+                           $msg -match 'I/O operation has been aborted' -or
+                           $msg -match 'The client cannot connect'
+            if ($isTransient -and $attempt -lt $MaxAttempts) {
+                Write-Warning "[$Label] Transient WinRM error on attempt $attempt/$MaxAttempts - retrying in ${DelaySec}s..."
+                Write-Warning "  Error: $msg"
+                Start-Sleep -Seconds $DelaySec
+            } else {
+                # Non-transient error, or out of retries - surface it
+                if ($attempt -ge $MaxAttempts) {
+                    Write-Warning "[$Label] Failed after $MaxAttempts attempts."
+                }
+                throw
+            }
+        }
+    }
+}
+
+# Wait-VMWinRM
+# Blocks until WinRM on $IPAddress is accepting connections, or throws after
+# $TimeoutMin minutes. Call this before any Invoke-Command that follows a
+# reboot or domain join - those operations leave a window where the port is
+# open but wsmprovhost.exe isn't ready yet.
+function Wait-VMWinRM {
+    param(
+        [string] $VMName,
+        [string] $IPAddress,
+        [int]    $TimeoutMin  = 10,
+        [int]    $PollSec     = 15
+    )
+    Write-Host "[$VMName] Waiting for WinRM on $IPAddress (up to $TimeoutMin min)..."
+    $deadline = (Get-Date).AddMinutes($TimeoutMin)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-WSMan -ComputerName $IPAddress -ErrorAction SilentlyContinue) {
+            Write-Host "[$VMName] WinRM ready."
+            # Extra settle time: the port being open does not mean wsmprovhost
+            # can spawn yet - a brief pause prevents the 1018 host-process error.
+            Start-Sleep -Seconds 10
+            return
+        }
+        Start-Sleep -Seconds $PollSec
+    }
+    throw "[$VMName] WinRM on $IPAddress did not respond within $TimeoutMin minutes."
+}
+
+# ---------------------------------------------------------------------------
+
 Write-Host "`n=== sqllab.local deployment ===" -ForegroundColor Cyan
 Write-Host "Domain    : $($config.DomainFQDN)"
 Write-Host "VMs       : $($roles.Count)"
@@ -118,19 +198,44 @@ foreach ($vm in $members) {
 
 # Step 6 - role-specific post-config
 Write-Host "`n[6/6] Running role post-config..." -ForegroundColor Cyan
+$postConfigErrors = [System.Collections.Generic.List[string]]::new()
+
 foreach ($vm in $members) {
+    # Ensure WinRM is fully settled after domain-join reboot before running
+    # any post-config scripts against this VM.
+    Wait-VMWinRM -VMName $vm.Name -IPAddress $vm.IP
+
     foreach ($script in $vm.PostConfig | Where-Object { $_ -ne 'Join-Domain.ps1' }) {
-        Write-Host "  -> $($vm.Name) : $script"
-        switch ($script) {
-            'Install-SQL.ps1'                  { .\06-Install-SQL.ps1                  -VMDef $vm -Config $config -SQLISOPath $SQLISOPath }
-            'Install-SSMS.ps1'                 { .\07-Install-SSMS.ps1                 -VMDef $vm -Config $config }
-            'Install-VSCode.ps1'               { .\08-Install-VSCode.ps1               -VMDef $vm -Config $config }
-            'Install-VisualStudio.ps1'         { .\09-Install-VisualStudio.ps1         -VMDef $vm -Config $config }
-            'Install-GitHub.ps1'               { .\10-Install-GitHub.ps1               -VMDef $vm -Config $config }
-            'Install-SqlServerModule.ps1'      { .\11-Install-SqlServerModule.ps1      -VMDef $vm -Config $config }
-            'Install-FailoverClusterTools.ps1' { .\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config }
+        $label = "$($vm.Name) : $script"
+        Write-Host "  -> $label"
+        try {
+            Invoke-WithRetry -Label $label {
+                switch ($script) {
+                    'Install-SQL.ps1'                  { .\06-Install-SQL.ps1                  -VMDef $vm -Config $config -SQLISOPath $SQLISOPath }
+                    'Install-SSMS.ps1'                 { .\07-Install-SSMS.ps1                 -VMDef $vm -Config $config }
+                    'Install-VSCode.ps1'               { .\08-Install-VSCode.ps1               -VMDef $vm -Config $config }
+                    'Install-VisualStudio.ps1'         { .\09-Install-VisualStudio.ps1         -VMDef $vm -Config $config }
+                    'Install-GitHub.ps1'               { .\10-Install-GitHub.ps1               -VMDef $vm -Config $config }
+                    'Install-SqlServerModule.ps1'      { .\11-Install-SqlServerModule.ps1      -VMDef $vm -Config $config }
+                    'Install-FailoverClusterTools.ps1' { .\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config }
+                }
+            }
+        } catch {
+            $errMsg = "FAILED: $label — $_"
+            Write-Warning $errMsg
+            $postConfigErrors.Add($errMsg)
+            # Continue with remaining scripts for this VM and other VMs.
+            # A failed install-X should not block install-Y on the same machine.
         }
     }
+}
+
+if ($postConfigErrors.Count -gt 0) {
+    Write-Host "`n[6/6] Post-config completed with $($postConfigErrors.Count) error(s):" -ForegroundColor Yellow
+    $postConfigErrors | ForEach-Object { Write-Warning $_ }
+    Write-Host "Re-run the failed scripts individually. Example:" -ForegroundColor Yellow
+    Write-Host '  $vm = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq "<vmname>"'
+    Write-Host '  .\10-Install-GitHub.ps1 -VMDef $vm -Config $config'
 }
 
 # Step 6 - cluster creation and Always On must be run manually from sqlwork01.
