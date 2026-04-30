@@ -277,8 +277,8 @@ The orchestrator runs six stages in order:
 | 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, SqlServer module, and Failover Cluster tools on sqlwork01 |
 
 > **Note:** `Deploy-Lab.ps1` stops after stage 6. Cluster creation and Always On
-> must be completed manually — see Steps 6 and 7 below. The Hyper-V host is not
-> domain-joined so cluster cmdlets cannot run from it directly.
+> must be completed manually — see Step 6 below. Both are run from sqlwork01;
+> the Hyper-V host is not domain-joined so cluster cmdlets cannot run from it directly.
 
 Total time for stages 1-6 is approximately 2.5-3 hours.
 
@@ -296,7 +296,7 @@ Total time for stages 1-6 is approximately 2.5-3 hours.
 
 ---
 
-### Step 6 - Cluster creation (run from sqlwork01)
+### Step 6 - Cluster creation and Always On (run from sqlwork01)
 
 Log into `sqlwork01` as `sqlpadawan` and open a **64-bit PowerShell session**:
 
@@ -309,36 +309,30 @@ Navigate to the sqllab project directory and run:
 ```powershell
 cd C:\Users\sqlpadawan\source\sqllab
 $config = Get-Content .\config.json | ConvertFrom-Json
+$roles  = Get-Content .\roles.json  | ConvertFrom-Json
 
 # Install Failover Cluster tools (already done if deployed via Deploy-Lab.ps1)
-$vm = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlwork01'
+$vm = $roles | Where-Object Name -eq 'sqlwork01'
 .\14-Install-FailoverClusterTools.ps1 -VMDef $vm -Config $config
 
 # Create both clusters
 foreach ($cluster in $config.Clusters) {
     .\12-New-LabCluster.ps1 -ClusterDef $cluster -Config $config
 }
-```
 
-Expected duration: 10-15 minutes per cluster.
-
----
-
-### Step 7 - Enable Always On (run from the Hyper-V host)
-
-Back on the Hyper-V host, run:
-
-```powershell
-$config = Get-Content .\config.json | ConvertFrom-Json
-$roles  = Get-Content .\roles.json  | ConvertFrom-Json
+# Enable Always On on all SQL cluster nodes
+# sqlwork01 is domain-joined so Kerberos reaches the SQL VMs directly - no
+# need to return to the Hyper-V host for this step.
 foreach ($vm in $roles | Where-Object { $_.Clustering -eq $true -and $_.Role -eq 'SQL' }) {
     .\13-Enable-AlwaysOn.ps1 -VMDef $vm -Config $config
 }
 ```
 
+Expected duration: 10-15 minutes per cluster, plus ~2 minutes per SQL node for Always On.
+
 ---
 
-### Step 8 - Post-deployment verification
+### Step 7 - Post-deployment verification
 
 From `sqlwork01`, open SSMS and connect to each SQL Server:
 

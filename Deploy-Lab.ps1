@@ -133,24 +133,27 @@ foreach ($vm in $members) {
     }
 }
 
-# Steps 7 and 8 - cluster creation and Always On must be run manually from
-# sqlwork01. The Hyper-V host is not domain-joined so it cannot run cluster
-# cmdlets directly. sqlwork01 is domain-joined and has a valid Kerberos token
-# to reach all SQL nodes without credential delegation issues.
+# Step 6 - cluster creation and Always On must be run manually from sqlwork01.
+# The Hyper-V host is not domain-joined so it cannot run cluster cmdlets directly.
+# sqlwork01 is domain-joined and has a valid Kerberos token to reach all SQL nodes
+# for both cluster creation and Always On enablement - no need to return to this host.
 
 Write-Host "`n=== Host deployment complete ===" -ForegroundColor Green
 Write-Host "Domain controller : $($dc.IP)"
 Write-Host "SQL servers       : $(($roles | Where-Object Role -eq 'SQL').IP -join ', ')"
 Write-Host "Workstation       : $(($roles | Where-Object Role -eq 'Workstation').IP)"
 Write-Host ""
-Write-Host "Next steps - run from sqlwork01 ($($workstation.IP)) as sqlpadawan:" -ForegroundColor Yellow
+Write-Host "Next steps - run from sqlwork01 as sqlpadawan:" -ForegroundColor Yellow
 Write-Host "  1. Open 64-bit PowerShell:"
 Write-Host "     C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 Write-Host "  2. cd C:\Users\sqlpadawan\source\sqllab"
+Write-Host "     `$config = Get-Content .\config.json | ConvertFrom-Json"
+Write-Host "     `$roles  = Get-Content .\roles.json  | ConvertFrom-Json"
 Write-Host "  3. Install Failover Cluster tools (first run only):"
+Write-Host "     `$vm = `$roles | Where-Object Name -eq 'sqlwork01'"
 Write-Host "     .\14-Install-FailoverClusterTools.ps1 -VMDef `$vm -Config `$config"
 Write-Host "  4. Create the clusters:"
 Write-Host "     foreach (`$cluster in `$config.Clusters) { .\12-New-LabCluster.ps1 -ClusterDef `$cluster -Config `$config }"
-Write-Host "  5. Return to this host and run:"
+Write-Host "  5. Enable Always On on all SQL cluster nodes:"
 Write-Host "     foreach (`$vm in `$roles | Where-Object { `$_.Clustering -and `$_.Role -eq 'SQL' }) { .\13-Enable-AlwaysOn.ps1 -VMDef `$vm -Config `$config }"
-Write-Host "  6. Run .\Verify-Lab.ps1 to confirm all checks pass" 
+Write-Host "  6. Run .\Verify-Lab.ps1 to confirm all checks pass"

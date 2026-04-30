@@ -135,17 +135,17 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 Write-Host "[$($VMDef.Name)] Installing SqlServer PowerShell module..."
 Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
 
-    # Ensure NuGet provider is present - required for Install-Module on Server 2025
-    if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers -Confirm:$false | Out-Null
-        Write-Host "NuGet provider installed."
-    }
+    # Ensure NuGet provider is present and PSGallery is trusted.
+    # On Windows Server 2025, Get-PackageProvider triggers an interactive GUI
+    # prompt if NuGet is not yet registered - even with -ErrorAction SilentlyContinue.
+    # Using -ForceBootstrap on Install-PackageProvider bypasses the prompt entirely
+    # and is a no-op if the provider is already at or above the requested version.
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 `
+        -Force -ForceBootstrap -Scope AllUsers -Confirm:$false | Out-Null
+    Write-Host "NuGet provider ready."
 
-    # Trust PSGallery to suppress confirmation prompts
-    if ((Get-PSRepository -Name PSGallery).InstallationPolicy -ne 'Trusted') {
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-        Write-Host "PSGallery set to Trusted."
-    }
+    # Trust PSGallery so Install-Module does not prompt for confirmation.
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 
     Write-Host "Installing SqlServer module from PSGallery..."
     Install-Module -Name SqlServer `
