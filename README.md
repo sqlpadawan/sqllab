@@ -214,7 +214,7 @@ This script:
 - Installs the SecretManagement and SecretStore modules
 
 > **If Hyper-V was not already enabled**, a reboot is required before continuing.
-> After rebooting, proceed to Step 3 - `Deploy-Lab.ps1` will re-run
+> After rebooting, proceed to Step 4 - `Deploy-Lab.ps1` will re-run
 > `00-Setup-LabFolders.ps1` idempotently and create the switches before
 > provisioning any VMs.
 
@@ -276,9 +276,10 @@ The orchestrator runs six stages in order:
 | 5 | Joins all member VMs and the workstation to the domain |
 | 6 | Installs SQL Server on sqlsrv01-04 (including SqlServer PowerShell module); installs SSMS, VS Code, Visual Studio, GitHub, SqlServer module, and Failover Cluster tools on sqlwork01 |
 
-> **Note:** `Deploy-Lab.ps1` stops after stage 6. Cluster creation and Always On
-> must be completed manually — see Step 6 below. Both are run from sqlwork01;
-> the Hyper-V host is not domain-joined so cluster cmdlets cannot run from it directly.
+> **Note:** `Deploy-Lab.ps1` stops after stage 6. SSH setup, repo clone, cluster
+> creation, and Always On must be completed manually -- see Steps 6 and 7 below.
+> Both cluster steps are run from sqlwork01; the Hyper-V host is not domain-joined
+> so cluster cmdlets cannot run from it directly.
 
 Total time for stages 1-6 is approximately 2.5-3 hours.
 
@@ -296,15 +297,76 @@ Total time for stages 1-6 is approximately 2.5-3 hours.
 
 ---
 
-### Step 6 - Cluster creation and Always On (run from sqlwork01)
+### Step 6 - SSH setup and repo clone (run from sqlwork01)
 
-Log into `sqlwork01` as `sqlpadawan` and open a **64-bit PowerShell session**:
+Log into `sqlwork01` as `sqlpadawan`. Before running any cluster scripts you need
+to set up SSH and clone the repo -- the scripts live in the repo, so this must
+happen first.
+
+**Generate the SSH key:**
+
+```powershell
+ssh-keygen -t ed25519 -C "sqlpadawan@gmail.com"
+# Accept the default path: C:\Users\sqlpadawan\.ssh\id_ed25519
+# Set a passphrase or leave blank
+```
+
+**Start the SSH agent and add the key:**
+
+> Run the Set-Service and Start-Service lines from an elevated (Run as
+> Administrator) PowerShell session -- the SSH agent service requires admin
+> rights to configure. The ssh-add line can be run from a normal session.
+
+```powershell
+# Run as Administrator
+Set-Service ssh-agent -StartupType Automatic
+Start-Service ssh-agent
+
+# Run as sqlpadawan (normal session)
+ssh-add C:\Users\sqlpadawan\.ssh\id_ed25519
+```
+
+**Copy the public key to the clipboard:**
+
+```powershell
+Get-Content C:\Users\sqlpadawan\.ssh\id_ed25519.pub | clip
+```
+
+**Add to GitHub:** go to https://github.com/settings/ssh/new, paste the key,
+give it a title like sqlwork01, and save.
+
+**Test the connection:**
+
+```powershell
+ssh -T git@github.com
+# Expected: "Hi sqlpadawan! You've successfully authenticated..."
+```
+
+**Clone the repo:**
+
+```powershell
+mkdir C:\Users\sqlpadawan\source -Force
+cd C:\Users\sqlpadawan\source
+git clone git@github.com:<your-username>/sqllab.git
+cd sqllab
+```
+
+> **Note:** Git config (username, email, default branch, VS Code as editor,
+> and core.sshCommand pointing at the Windows OpenSSH client) is applied
+> automatically during deployment by 10-Install-GitHub.ps1. No additional
+> git configuration is needed after cloning.
+
+---
+
+### Step 7 - Cluster creation and Always On (run from sqlwork01)
+
+Open a **64-bit PowerShell session** on `sqlwork01` as `sqlpadawan`:
 
 ```powershell
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
 ```
 
-Navigate to the sqllab project directory and run:
+Navigate to the cloned repo and run:
 
 ```powershell
 cd C:\Users\sqlpadawan\source\sqllab
@@ -332,7 +394,7 @@ Expected duration: 10-15 minutes per cluster, plus ~2 minutes per SQL node for A
 
 ---
 
-### Step 7 - Post-deployment verification
+### Step 8 - Post-deployment verification
 
 From `sqlwork01`, open SSMS and connect to each SQL Server:
 
@@ -454,66 +516,6 @@ $config = Get-Content .\config.json | ConvertFrom-Json
 $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 'sqlsrv01'
 .\13-Enable-AlwaysOn.ps1 -VMDef $vm -Config $config
 ```
-
----
-
-## SSH setup for sqlwork01
-
-After the lab is deployed, configure SSH on `sqlwork01` so `sqlpadawan` can
-clone and push to GitHub. Run all of the following on `sqlwork01` logged in
-as `sqlpadawan`.
-
-**Generate the SSH key:**
-
-```powershell
-ssh-keygen -t ed25519 -C "sqlpadawan@gmail.com"
-# Accept the default path: C:\Users\sqlpadawan\.ssh\id_ed25519
-# Set a passphrase or leave blank
-```
-
-**Start the SSH agent and add the key:**
-
-> Run the following two `Set-Service` and `Start-Service` lines from an
-> **elevated (Run as Administrator) PowerShell session** — the SSH agent
-> service requires admin rights to configure. The `ssh-add` line can be
-> run from a normal session afterward.
-
-```powershell
-# Run as Administrator
-Set-Service ssh-agent -StartupType Automatic
-Start-Service ssh-agent
-
-# Run as sqlpadawan (normal session)
-ssh-add C:\Users\sqlpadawan\.ssh\id_ed25519
-```
-
-**Copy the public key to the clipboard:**
-
-```powershell
-Get-Content C:\Users\sqlpadawan\.ssh\id_ed25519.pub | clip
-```
-
-**Add to GitHub:** go to `https://github.com/settings/ssh/new`, paste the key,
-give it a title like `sqlwork01`, and save.
-
-**Test the connection:**
-
-```powershell
-ssh -T git@github.com
-# Expected: "Hi sqlpadawan! You've successfully authenticated..."
-```
-
-**Clone the repo:**
-
-```powershell
-mkdir C:\Users\sqlpadawan\source\repos -Force
-cd C:\Users\sqlpadawan\source\repos
-git clone git@github.com:<your-username>/sqllab.git
-```
-
-> **Note:** Git config (username, email, default branch, VS Code as editor)
-> is applied automatically during deployment by `10-Install-GitHub.ps1`.
-> No additional git configuration is needed after cloning.
 
 ---
 

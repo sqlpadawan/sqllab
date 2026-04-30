@@ -9,34 +9,21 @@ if ($WhatIfPreference) {
     return
 }
 
-# This script is designed to run from two contexts:
-#   1. From the Hyper-V host during Deploy-Lab.ps1 - uses vault credentials
-#   2. From sqlwork01 directly - uses current domain user token (no vault needed)
+# This script runs in three contexts:
+#   1. From the Hyper-V host (Deploy-Lab.ps1) - remote via IP + vault credentials
+#   2. From sqlwork01 targeting another VM    - remote via hostname + Kerberos
+#   3. From sqlwork01 targeting sqlwork01     - local execution (no remoting)
 #
-# Context is detected by checking whether this machine is domain-joined.
-# If domain-joined, use the hostname and rely on Kerberos - no vault needed.
-# If not domain-joined (the Hyper-V host), use the IP and vault credentials.
+# Windows blocks WinRM loopback to the local machine by hostname, so when the
+# target VM is the current machine we run the install block directly instead
+# of remoting into ourselves.
 
+$isLocalTarget = ($VMDef.Name -eq $env:COMPUTERNAME)
 $isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
-
-if ($isDomainJoined) {
-    # Running from sqlwork01 or another domain member - Kerberos handles auth.
-    # Use hostname so Kerberos SPN resolution works correctly.
-    $invokeParams = @{ ComputerName = $VMDef.Name }
-} else {
-    # Running from the Hyper-V host - must use IP and explicit credentials.
-    $invokeParams = @{
-        ComputerName = $VMDef.IP
-        Credential   = New-Object PSCredential(
-            "$($Config.DomainNetBIOS)\Administrator",
-            (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
-    }
-}
 
 Write-Host "[$($VMDef.Name)] Installing Failover Cluster management tools..."
 
-Invoke-Command @invokeParams -ScriptBlock {
-
+$installBlock = {
     $feature = Get-WindowsFeature RSAT-Clustering-PowerShell -ErrorAction SilentlyContinue
     if ($feature -and $feature.InstallState.ToString() -eq 'Installed') {
         Write-Host "RSAT-Clustering-PowerShell already installed - skipping."
@@ -60,4 +47,18 @@ Invoke-Command @invokeParams -ScriptBlock {
     } else {
         Write-Warning "FailoverClusters module not found after install - a reboot may be required."
     }
+}
+
+if ($isLocalTarget) {
+    # Target is this machine - run locally to avoid WinRM loopback restriction.
+    & $installBlock
+} elseif ($isDomainJoined) {
+    # Domain-joined machine targeting another VM - Kerberos handles auth.
+    Invoke-Command -ComputerName $VMDef.Name -ScriptBlock $installBlock
+} else {
+    # Hyper-V host (not domain-joined) - use IP and vault credentials.
+    $cred = New-Object PSCredential(
+        "$($Config.DomainNetBIOS)\Administrator",
+        (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+    Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock $installBlock
 }

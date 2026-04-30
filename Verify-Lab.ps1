@@ -9,9 +9,16 @@ Set-Location $PSScriptRoot
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 $roles  = Get-Content $RolesPath  | ConvertFrom-Json
 
-$domainCred = New-Object PSCredential(
-    "$($config.DomainNetBIOS)\Administrator",
-    (Get-Secret -Name 'DomainAdminPass' -Vault $config.SecretsVault))
+# Build domain credentials only when the vault is available (Hyper-V host).
+# When running from sqlwork01 the machine is domain-joined and Kerberos handles
+# auth automatically - no vault or explicit credentials needed.
+$isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+$domainCred = $null
+if (-not $isDomainJoined) {
+    $domainCred = New-Object PSCredential(
+        "$($config.DomainNetBIOS)\Administrator",
+        (Get-Secret -Name 'DomainAdminPass' -Vault $config.SecretsVault))
+}
 
 $pass  = 0
 $fail  = 0
@@ -44,29 +51,33 @@ foreach ($vm in $roles) {
 # ---------------------------------------------------------------------------
 # 2. Host network
 # ---------------------------------------------------------------------------
-Write-Check "[2/6] Host network..."
+Write-Check "[2/9] Host network..."
 
-$internalNIC = Get-NetIPAddress -InterfaceAlias "*$($config.vSwitchInternal)*" `
-    -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq $config.HostInternalIP }
-if ($internalNIC) {
-    Write-Pass "Host vNIC has $($config.HostInternalIP)/24 on $($config.vSwitchInternal)"
-} else {
-    Write-Fail "Host vNIC missing $($config.HostInternalIP)/24 - run 00-Setup-LabFolders.ps1"
-}
+if (-not $isDomainJoined) {
+    $internalNIC = Get-NetIPAddress -InterfaceAlias "*$($config.vSwitchInternal)*" `
+        -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -eq $config.HostInternalIP }
+    if ($internalNIC) {
+        Write-Pass "Host vNIC has $($config.HostInternalIP)/24 on $($config.vSwitchInternal)"
+    } else {
+        Write-Fail "Host vNIC missing $($config.HostInternalIP)/24 - run 00-Setup-LabFolders.ps1"
+    }
 
-$dcbRoute = Get-NetRoute -DestinationPrefix '192.168.10.0/24' -ErrorAction SilentlyContinue |
-    Where-Object { $_.NextHop -eq '172.16.10.10' }
-if ($dcbRoute) {
-    Write-Pass "DC-B route present: 192.168.10.0/24 via 172.16.10.10"
+    $dcbRoute = Get-NetRoute -DestinationPrefix '192.168.10.0/24' -ErrorAction SilentlyContinue |
+        Where-Object { $_.NextHop -eq '172.16.10.10' }
+    if ($dcbRoute) {
+        Write-Pass "DC-B route present: 192.168.10.0/24 via 172.16.10.10"
+    } else {
+        Write-Warn "DC-B route missing - DC-B VMs may be unreachable from host"
+    }
 } else {
-    Write-Warn "DC-B route missing - DC-B VMs may be unreachable from host"
+    Write-Host "  Skipping host network checks - not applicable when running from sqlwork01." -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------
 # 3. WinRM reachability
 # ---------------------------------------------------------------------------
-Write-Check "[3/6] WinRM connectivity..."
+Write-Check "[3/9] WinRM connectivity..."
 foreach ($vm in $roles | Where-Object { $_.Role -ne 'DC' }) {
     if (Test-WSMan -ComputerName $vm.IP -ErrorAction SilentlyContinue) {
         Write-Pass "$($vm.Name) ($($vm.IP)) - WinRM reachable"
@@ -74,7 +85,6 @@ foreach ($vm in $roles | Where-Object { $_.Role -ne 'DC' }) {
         Write-Fail "$($vm.Name) ($($vm.IP)) - WinRM not responding"
     }
 }
-# DC - test by IP since FQDN requires Kerberos from a non-domain host
 $dcIP = ($roles | Where-Object Role -eq 'DC').IP
 if (Test-NetConnection -ComputerName $dcIP -Port 5985 `
         -InformationLevel Quiet -WarningAction SilentlyContinue) {
@@ -86,11 +96,12 @@ if (Test-NetConnection -ComputerName $dcIP -Port 5985 `
 # ---------------------------------------------------------------------------
 # 4. Domain membership
 # ---------------------------------------------------------------------------
-Write-Check "[4/6] Domain membership..."
+Write-Check "[4/9] Domain membership..."
 try {
-    $dcIP = ($roles | Where-Object Role -eq 'DC').IP
-    $computers = Invoke-Command -ComputerName $dcIP `
-        -Credential $domainCred -ErrorAction Stop -ScriptBlock {
+    $dc = $roles | Where-Object Role -eq 'DC'
+    $dcTarget = if ($isDomainJoined) { $dc.Name } else { $dc.IP }
+    $invokeParams = if ($isDomainJoined) { @{ ComputerName = $dcTarget } } else { @{ ComputerName = $dcTarget; Credential = $domainCred } }
+    $computers = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
         Get-ADComputer -Filter * | Select-Object -ExpandProperty Name
     }
     $expectedNames = $roles.Name | ForEach-Object { $_.ToUpper() }
@@ -108,16 +119,15 @@ try {
 # ---------------------------------------------------------------------------
 # 5. SQL Server connectivity
 # ---------------------------------------------------------------------------
-Write-Check "[5/6] SQL Server connectivity..."
+Write-Check "[5/9] SQL Server connectivity..."
 $sqlVMs = $roles | Where-Object { $_.Role -eq 'SQL' }
 foreach ($vm in $sqlVMs) {
     try {
-        $result = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
-            -ErrorAction Stop -ScriptBlock {
+        $invokeParams = if ($isDomainJoined) { @{ ComputerName = $vm.Name } } else { @{ ComputerName = $vm.IP; Credential = $domainCred } }
+        $result = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
             $svc = Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue
             if (-not $svc) { return "Service not found" }
             if ($svc.Status -ne 'Running') { return "Service is $($svc.Status)" }
-            # Test TCP 1433
             $tcp = Test-NetConnection -ComputerName localhost -Port 1433 `
                 -InformationLevel Quiet -WarningAction SilentlyContinue
             if (-not $tcp) { return "Port 1433 not listening" }
@@ -133,18 +143,23 @@ foreach ($vm in $sqlVMs) {
     }
 }
 
-# Test SQL connectivity from sqlwork01 to each SQL server
+# Test SQL connectivity from sqlwork01 to each SQL server.
+# When already on sqlwork01, test locally instead of remoting to ourselves.
 Write-Host "  Checking SQL connectivity from sqlwork01..."
-$workIP = ($roles | Where-Object Name -eq 'sqlwork01').IP
+$workstation = $roles | Where-Object Name -eq 'sqlwork01'
 foreach ($vm in $sqlVMs) {
     try {
-        $result = Invoke-Command -ComputerName $workIP -Credential $domainCred `
-            -ErrorAction Stop -ScriptBlock {
-            param($SQLHost)
-            $tcp = Test-NetConnection -ComputerName $SQLHost -Port 1433 `
+        if ($isDomainJoined) {
+            $result = Test-NetConnection -ComputerName $vm.IP -Port 1433 `
                 -InformationLevel Quiet -WarningAction SilentlyContinue
-            return $tcp
-        } -ArgumentList $vm.IP
+        } else {
+            $result = Invoke-Command -ComputerName $workstation.IP -Credential $domainCred `
+                -ErrorAction Stop -ScriptBlock {
+                param($SQLHost)
+                Test-NetConnection -ComputerName $SQLHost -Port 1433 `
+                    -InformationLevel Quiet -WarningAction SilentlyContinue
+            } -ArgumentList $vm.IP
+        }
         if ($result) {
             Write-Pass "sqlwork01 -> $($vm.Name):1433 - reachable"
         } else {
@@ -159,10 +174,10 @@ foreach ($vm in $sqlVMs) {
 # 6. Workstation software
 # ---------------------------------------------------------------------------
 Write-Check "[6/9] Workstation software..."
-$workIP = ($roles | Where-Object Name -eq 'sqlwork01').IP
+$workstation = $roles | Where-Object Name -eq 'sqlwork01'
 try {
-    Invoke-Command -ComputerName $workIP -Credential $domainCred `
-        -ErrorAction Stop -ScriptBlock {
+    $invokeParams = if ($isDomainJoined) { @{ ComputerName = $workstation.Name } } else { @{ ComputerName = $workstation.IP; Credential = $domainCred } }
+    Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
 
         $checks = @{
             "SSMS"          = @(
@@ -212,8 +227,8 @@ if ($clusterVMs) {
     Write-Check "[7/9] Failover Clustering feature..."
     foreach ($vm in $clusterVMs) {
         try {
-            $result = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
-                -ErrorAction Stop -ScriptBlock {
+            $invokeParams = if ($isDomainJoined) { @{ ComputerName = $vm.Name } } else { @{ ComputerName = $vm.IP; Credential = $domainCred } }
+            $result = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
                 $f = Get-WindowsFeature Failover-Clustering
                 # InstallState is an enum - return as string for reliable comparison
                 return $f.InstallState.ToString()
@@ -237,35 +252,45 @@ if ($clusterVMs) {
 # ---------------------------------------------------------------------------
 if ($config.Clusters) {
     Write-Check "[8/9] Failover cluster health..."
-    $workstation = $roles | Where-Object { $_.Name -eq 'sqlwork01' }
+
+    # FailoverClusters cmdlets do not work over a double-hop PSRemoting session.
+    # When running from a domain-joined machine (sqlwork01) run checks locally.
+    # When running from the Hyper-V host, remote into sqlwork01 in a single hop.
+    $isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+
+    $clusterCheckBlock = {
+        param($ClusterName)
+        if (-not (Get-Module -ListAvailable FailoverClusters)) {
+            return [PSCustomObject]@{ Found = $false; Reason = 'FailoverClusters module not found' }
+        }
+        Import-Module FailoverClusters -ErrorAction SilentlyContinue
+        $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
+        if (-not $cluster) {
+            return [PSCustomObject]@{ Found = $false; Reason = "Cluster '$ClusterName' not found" }
+        }
+        $grp    = Get-ClusterGroup  -Cluster $ClusterName -Name 'Cluster Group' -ErrorAction SilentlyContinue
+        $nodes  = Get-ClusterNode   -Cluster $ClusterName | Select-Object Name, @{ N='State'; E={ $_.State.ToString() } }
+        $quorum = Get-ClusterQuorum -Cluster $ClusterName
+        return [PSCustomObject]@{
+            Found        = $true
+            ClusterState = $grp.State.ToString()
+            Nodes        = $nodes
+            QuorumType   = $quorum.QuorumType.ToString()
+        }
+    }
+
     foreach ($clusterDef in $config.Clusters) {
         try {
-            # Run cluster queries from sqlwork01 - it is domain-joined so Kerberos
-            # flows naturally to the cluster nodes with no double-hop issues.
-            $clusterResult = Invoke-Command -ComputerName $workstation.IP -Credential $domainCred `
-                -ErrorAction Stop -ScriptBlock {
-                param($ClusterName)
-
-                if (-not (Get-Module -ListAvailable FailoverClusters)) {
-                    return [PSCustomObject]@{ Found = $false; Reason = 'FailoverClusters module not found on sqlwork01' }
-                }
-
-                $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
-                if (-not $cluster) {
-                    return [PSCustomObject]@{ Found = $false; Reason = "Cluster '$ClusterName' not found" }
-                }
-
-                $grp    = Get-ClusterGroup  -Cluster $ClusterName -Name 'Cluster Group' -ErrorAction SilentlyContinue
-                $nodes  = Get-ClusterNode   -Cluster $ClusterName | Select-Object Name, @{ N='State'; E={ $_.State.ToString() } }
-                $quorum = Get-ClusterQuorum -Cluster $ClusterName
-
-                return [PSCustomObject]@{
-                    Found        = $true
-                    ClusterState = $grp.State.ToString()
-                    Nodes        = $nodes
-                    QuorumType   = $quorum.QuorumType.ToString()
-                }
-            } -ArgumentList $clusterDef.Name
+            if ($isDomainJoined) {
+                # Running on sqlwork01 - invoke locally, no remoting needed.
+                $clusterResult = & $clusterCheckBlock $clusterDef.Name
+            } else {
+                # Running on the Hyper-V host - single hop to sqlwork01.
+                $workstation = $roles | Where-Object { $_.Name -eq 'sqlwork01' }
+                $clusterResult = Invoke-Command -ComputerName $workstation.IP `
+                    -Credential $domainCred -ErrorAction Stop `
+                    -ScriptBlock $clusterCheckBlock -ArgumentList $clusterDef.Name
+            }
 
             if (-not $clusterResult.Found) {
                 Write-Fail "$($clusterDef.Name) - $($clusterResult.Reason)"
@@ -307,10 +332,15 @@ if ($config.Clusters) {
 $alwaysOnVMs = $roles | Where-Object { $_.Clustering -eq $true -and $_.Role -eq 'SQL' }
 if ($alwaysOnVMs) {
     Write-Check "[9/9] Always On Availability Groups..."
+    $isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
     foreach ($vm in $alwaysOnVMs) {
         try {
-            $enabled = Invoke-Command -ComputerName $vm.IP -Credential $domainCred `
-                -ErrorAction Stop -ScriptBlock {
+            $invokeParams = if ($isDomainJoined) {
+                @{ ComputerName = $vm.Name }
+            } else {
+                @{ ComputerName = $vm.IP; Credential = $domainCred }
+            }
+            $enabled = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
                 if (-not (Get-Module -ListAvailable SqlServer)) { return $null }
                 Import-Module SqlServer -ErrorAction Stop
                 $inst = Get-Item 'SQLSERVER:\SQL\localhost\DEFAULT' -ErrorAction Stop
