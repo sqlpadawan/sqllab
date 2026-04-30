@@ -34,36 +34,75 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     # -------------------------------------------------------------------------
-    # Install Git for Windows
-    # Provides git.exe on PATH for command line usage and VS Code integration.
-    # Uses the GitHub API to resolve the latest release download URL so the
-    # script never needs to be updated when new versions are released.
+    # Install Git for Windows (CLI only - no GUI)
+    # Primary:  winget - ships with WS2025, no download URL to maintain,
+    #           handles PATH automatically, smaller network footprint.
+    # Fallback: GitHub API + Invoke-WebRequest if winget is unavailable or
+    #           fails (e.g. App Installer service not running, air-gapped host).
     # -------------------------------------------------------------------------
     $gitExe = "C:\Program Files\Git\cmd\git.exe"
 
     if (Test-Path $gitExe) {
-        Write-Host "Git for Windows already installed - skipping download."
+        Write-Host "Git for Windows already installed - skipping."
     } else {
-        Write-Host "Resolving latest Git for Windows release..."
-        $gitRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -UseBasicParsing
-        $gitUrl     = ($gitRelease.assets | Where-Object { $_.name -like "Git-*-64-bit.exe" } | Select-Object -First 1).browser_download_url
-        if (-not $gitUrl) {
-            throw "Could not resolve Git for Windows download URL from GitHub API."
-        }
-        Write-Host "Downloading Git for Windows from $gitUrl..."
-        $gitDest = "C:\Windows\Temp\GitSetup.exe"
-        Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
+        # --- Primary: winget ---
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        $installedViaWinget = $false
 
-        Write-Host "Installing Git for Windows silently..."
-        $gitResult = Start-Process -FilePath $gitDest `
-            -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
-            -Wait -PassThru -NoNewWindow
+        if ($winget) {
+            Write-Host "Installing Git via winget..."
+            # --scope machine writes to Program Files and updates the system PATH,
+            # which is what we need for VS Code integration and scheduled task git config.
+            $wgResult = Start-Process -FilePath $winget.Source `
+                -ArgumentList 'install --id Git.Git --silent --scope machine --accept-package-agreements --accept-source-agreements' `
+                -Wait -PassThru -NoNewWindow
 
-        if ($gitResult.ExitCode -notin @(0, 3010)) {
-            throw "Git for Windows install failed with exit code $($gitResult.ExitCode)"
+            # winget exit codes: 0 = success, -1978335189 (0x8A150013) = already installed
+            if ($wgResult.ExitCode -in @(0, -1978335189)) {
+                Write-Host "Git installed via winget."
+                $installedViaWinget = $true
+            } else {
+                Write-Warning "winget exited with code $($wgResult.ExitCode) - falling back to direct download."
+            }
+        } else {
+            Write-Host "winget not found - using direct download fallback."
         }
-        Write-Host "Git for Windows installed."
-        Remove-Item $gitDest -Force -ErrorAction SilentlyContinue
+
+        # --- Fallback: GitHub API + NSIS installer ---
+        if (-not $installedViaWinget -and -not (Test-Path $gitExe)) {
+            Write-Host "Resolving latest Git for Windows release from GitHub API..."
+            $gitRelease = Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" `
+                -UseBasicParsing
+            $gitUrl = ($gitRelease.assets |
+                Where-Object { $_.name -like "Git-*-64-bit.exe" } |
+                Select-Object -First 1).browser_download_url
+            if (-not $gitUrl) {
+                throw "Could not resolve Git for Windows download URL from GitHub API."
+            }
+
+            Write-Host "Downloading Git for Windows from $gitUrl..."
+            $gitDest = "C:\Windows\Temp\GitSetup.exe"
+            Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
+
+            Write-Host "Installing Git for Windows silently..."
+            $gitResult = Start-Process -FilePath $gitDest `
+                -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
+                -Wait -PassThru -NoNewWindow
+
+            if ($gitResult.ExitCode -notin @(0, 3010)) {
+                throw "Git for Windows install failed with exit code $($gitResult.ExitCode)"
+            }
+            Write-Host "Git for Windows installed via direct download."
+            Remove-Item $gitDest -Force -ErrorAction SilentlyContinue
+        }
+
+        # Refresh PATH in this session so git.exe is visible to the config
+        # step below without requiring a new shell. winget and the NSIS
+        # installer both write to the system PATH but the current PSRemoting
+        # session won't see it until PATH is reloaded.
+        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                    [System.Environment]::GetEnvironmentVariable('Path', 'User')
     }
 
     # -------------------------------------------------------------------------
