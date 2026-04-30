@@ -9,13 +9,24 @@ if ($WhatIfPreference) {
     return
 }
 
-$domainCred = New-Object PSCredential(
-    "$($Config.DomainNetBIOS)\Administrator",
-    (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+# Use hostname + Kerberos when running from a domain-joined machine (sqlwork01).
+# Use IP + vault credentials when running from the Hyper-V host.
+$isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+
+$invokeParams = if ($isDomainJoined) {
+    @{ ComputerName = $VMDef.Name }
+} else {
+    @{
+        ComputerName = $VMDef.IP
+        Credential   = New-Object PSCredential(
+            "$($Config.DomainNetBIOS)\Administrator",
+            (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+    }
+}
 
 Write-Host "[$($VMDef.Name)] Enabling Always On Availability Groups..."
 
-Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
+Invoke-Command @invokeParams -ScriptBlock {
 
     # Confirm SqlServer module is available before proceeding
     if (-not (Get-Module -ListAvailable SqlServer)) {

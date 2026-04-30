@@ -12,15 +12,25 @@ if ($WhatIfPreference) {
 # This script is designed to run from two contexts:
 #   1. From the Hyper-V host during Deploy-Lab.ps1 - uses vault credentials
 #   2. From sqlwork01 directly - uses current domain user token (no vault needed)
-# When running from sqlwork01 as a domain admin, omit -Credential so Kerberos
-# handles authentication automatically.
+#
+# Context is detected by checking whether this machine is domain-joined.
+# If domain-joined, use the hostname and rely on Kerberos - no vault needed.
+# If not domain-joined (the Hyper-V host), use the IP and vault credentials.
 
-$invokeParams = @{ ComputerName = $VMDef.IP }
+$isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
 
-if (Get-SecretVault -Name $Config.SecretsVault -ErrorAction SilentlyContinue) {
-    $invokeParams.Credential = New-Object PSCredential(
-        "$($Config.DomainNetBIOS)\Administrator",
-        (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+if ($isDomainJoined) {
+    # Running from sqlwork01 or another domain member - Kerberos handles auth.
+    # Use hostname so Kerberos SPN resolution works correctly.
+    $invokeParams = @{ ComputerName = $VMDef.Name }
+} else {
+    # Running from the Hyper-V host - must use IP and explicit credentials.
+    $invokeParams = @{
+        ComputerName = $VMDef.IP
+        Credential   = New-Object PSCredential(
+            "$($Config.DomainNetBIOS)\Administrator",
+            (Get-Secret -Name 'DomainAdminPass' -Vault $Config.SecretsVault))
+    }
 }
 
 Write-Host "[$($VMDef.Name)] Installing Failover Cluster management tools..."

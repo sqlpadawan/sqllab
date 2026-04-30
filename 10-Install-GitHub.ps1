@@ -34,124 +34,86 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $domainCred -ScriptBlock {
     }
 
     # -------------------------------------------------------------------------
-    # Install Git for Windows (CLI only - no GUI)
-    # Primary:  winget - ships with WS2025, no download URL to maintain,
-    #           handles PATH automatically, smaller network footprint.
-    # Fallback: GitHub API + Invoke-WebRequest if winget is unavailable or
-    #           fails (e.g. App Installer service not running, air-gapped host).
+    # Install Git for Windows
+    # Provides git.exe on PATH for command line usage and VS Code integration.
+    # Uses the GitHub API to resolve the latest release download URL so the
+    # script never needs to be updated when new versions are released.
     # -------------------------------------------------------------------------
     $gitExe = "C:\Program Files\Git\cmd\git.exe"
 
     if (Test-Path $gitExe) {
-        Write-Host "Git for Windows already installed - skipping."
+        Write-Host "Git for Windows already installed - skipping download."
     } else {
-        # --- Primary: winget ---
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        $installedViaWinget = $false
-
-        if ($winget) {
-            Write-Host "Installing Git via winget..."
-            # --scope machine writes to Program Files and updates the system PATH,
-            # which is what we need for VS Code integration and scheduled task git config.
-            $wgResult = Start-Process -FilePath $winget.Source `
-                -ArgumentList 'install --id Git.Git --silent --scope machine --accept-package-agreements --accept-source-agreements' `
-                -Wait -PassThru -NoNewWindow
-
-            # winget exit codes: 0 = success, -1978335189 (0x8A150013) = already installed
-            if ($wgResult.ExitCode -in @(0, -1978335189)) {
-                Write-Host "Git installed via winget."
-                $installedViaWinget = $true
-            } else {
-                Write-Warning "winget exited with code $($wgResult.ExitCode) - falling back to direct download."
-            }
-        } else {
-            Write-Host "winget not found - using direct download fallback."
+        Write-Host "Resolving latest Git for Windows release..."
+        $gitRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -UseBasicParsing
+        $gitUrl     = ($gitRelease.assets | Where-Object { $_.name -like "Git-*-64-bit.exe" } | Select-Object -First 1).browser_download_url
+        if (-not $gitUrl) {
+            throw "Could not resolve Git for Windows download URL from GitHub API."
         }
+        Write-Host "Downloading Git for Windows from $gitUrl..."
+        $gitDest = "C:\Windows\Temp\GitSetup.exe"
+        Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
 
-        # --- Fallback: GitHub API + NSIS installer ---
-        if (-not $installedViaWinget -and -not (Test-Path $gitExe)) {
-            Write-Host "Resolving latest Git for Windows release from GitHub API..."
-            $gitRelease = Invoke-RestMethod `
-                -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" `
-                -UseBasicParsing
-            $gitUrl = ($gitRelease.assets |
-                Where-Object { $_.name -like "Git-*-64-bit.exe" } |
-                Select-Object -First 1).browser_download_url
-            if (-not $gitUrl) {
-                throw "Could not resolve Git for Windows download URL from GitHub API."
-            }
+        Write-Host "Installing Git for Windows silently..."
+        $gitResult = Start-Process -FilePath $gitDest `
+            -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
+            -Wait -PassThru -NoNewWindow
 
-            Write-Host "Downloading Git for Windows from $gitUrl..."
-            $gitDest = "C:\Windows\Temp\GitSetup.exe"
-            Invoke-WebRequest -Uri $gitUrl -OutFile $gitDest -UseBasicParsing
-
-            Write-Host "Installing Git for Windows silently..."
-            $gitResult = Start-Process -FilePath $gitDest `
-                -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh" `
-                -Wait -PassThru -NoNewWindow
-
-            if ($gitResult.ExitCode -notin @(0, 3010)) {
-                throw "Git for Windows install failed with exit code $($gitResult.ExitCode)"
-            }
-            Write-Host "Git for Windows installed via direct download."
-            Remove-Item $gitDest -Force -ErrorAction SilentlyContinue
+        if ($gitResult.ExitCode -notin @(0, 3010)) {
+            throw "Git for Windows install failed with exit code $($gitResult.ExitCode)"
         }
-
-        # Refresh PATH in this session so git.exe is visible to the config
-        # step below without requiring a new shell. winget and the NSIS
-        # installer both write to the system PATH but the current PSRemoting
-        # session won't see it until PATH is reloaded.
-        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-                    [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        Write-Host "Git for Windows installed."
+        Remove-Item $gitDest -Force -ErrorAction SilentlyContinue
     }
 
     # -------------------------------------------------------------------------
-    # Apply git config under the lab user account via scheduled task.
-    # Uses --global so settings go into the lab user's own .gitconfig rather
-    # than the system-wide gitconfig, keeping it personal to that account.
+    # Write .gitconfig directly to the lab user's profile directory.
+    # This is more reliable than a scheduled task approach - the scheduled
+    # task can silently fail if the profile is not fully initialized when
+    # the task fires, leaving git config missing or written to the wrong
+    # location. Writing the file directly is deterministic and immediate.
+    #
+    # core.sshCommand points Git at the Windows OpenSSH client instead of
+    # Git's bundled ssh.exe. Git's bundled ssh.exe does not use the Windows
+    # ssh-agent, so keys loaded via ssh-add are invisible to it, causing
+    # "Permission denied (publickey)" on every clone even when ssh -T works.
     # -------------------------------------------------------------------------
-    if (-not (Test-Path $gitExe)) {
-        Write-Warning "git.exe not found at $gitExe - skipping git config."
-    } else {
-        Write-Host "Applying git config for $LabUser..."
+    $username   = $LabUser.Split('\')[-1]
+    $profDir    = "C:\Users\$username"
+    $gitConfig  = "$profDir\.gitconfig"
 
-        $gitScript = @"
-& '$gitExe' config --global user.name          '$GitUserName'
-& '$gitExe' config --global user.email         '$GitUserEmail'
-& '$gitExe' config --global init.defaultBranch '$GitDefaultBranch'
-& '$gitExe' config --global core.autocrlf      '$GitAutoCrlf'
-& '$gitExe' config --global core.editor        "'C:\Program Files\Microsoft VS Code\bin\code.cmd' --wait"
-& '$gitExe' config --global push.defaultBranch current
-# Use Windows OpenSSH instead of Git's bundled ssh client.
-# Git for Windows ships its own ssh.exe which does not use the Windows
-# ssh-agent, causing authentication failures even when keys are loaded.
-# Pointing core.sshCommand at the Windows OpenSSH client fixes this.
-& '$gitExe' config --global core.sshCommand    'C:/Windows/System32/OpenSSH/ssh.exe'
-'done' | Out-File 'C:\Windows\Temp\GitConfigDone.txt' -Force
+    # Ensure the profile directory exists - it should already from the
+    # VS Code install step, but guard against ordering changes.
+    if (-not (Test-Path $profDir)) {
+        New-Item -ItemType Directory -Path $profDir -Force | Out-Null
+        Write-Host "Created profile directory: $profDir"
+    }
+
+    Write-Host "Writing .gitconfig for $LabUser..."
+
+    $gitConfigContent = @"
+[user]
+	name = $GitUserName
+	email = $GitUserEmail
+[init]
+	defaultBranch = $GitDefaultBranch
+[core]
+	autocrlf = $GitAutoCrlf
+	editor = 'C:/Program Files/Microsoft VS Code/bin/code.cmd' --wait
+	sshCommand = C:/Windows/System32/OpenSSH/ssh.exe
+[push]
+	defaultBranch = current
 "@
-        $encoded   = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($gitScript))
-        $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
-        $principal = New-ScheduledTaskPrincipal -UserId $LabUser -RunLevel Highest
-        $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-        Register-ScheduledTask -TaskName 'GitConfig' -Action $action `
-            -Principal $principal -Settings $settings -Force | Out-Null
 
-        Remove-Item 'C:\Windows\Temp\GitConfigDone.txt' -Force -ErrorAction SilentlyContinue
-        Start-ScheduledTask -TaskName 'GitConfig'
+    [System.IO.File]::WriteAllText($gitConfig, $gitConfigContent, [System.Text.ASCIIEncoding]::new())
+    Write-Host ".gitconfig written to $gitConfig"
 
-        $deadline = (Get-Date).AddMinutes(5)
-        while ((Get-Date) -lt $deadline) {
-            $gitState = (Get-ScheduledTask -TaskName 'GitConfig' -ErrorAction SilentlyContinue).State
-            if ((Test-Path 'C:\Windows\Temp\GitConfigDone.txt') -or
-                $gitState -eq 'Ready' -or [int]$gitState -eq 3) { break }
-            Start-Sleep -Seconds 5
-        }
-
-        Unregister-ScheduledTask -TaskName 'GitConfig' -Confirm:$false -ErrorAction SilentlyContinue
-        Remove-Item 'C:\Windows\Temp\GitConfigDone.txt' -Force -ErrorAction SilentlyContinue
-
-        Write-Host "Git config applied."
+    # Verify the file landed correctly
+    if (Test-Path $gitConfig) {
+        Write-Host "Git config applied:"
+        Get-Content $gitConfig | ForEach-Object { Write-Host "  $_" }
+    } else {
+        Write-Warning ".gitconfig not found at $gitConfig after write - check profile path."
     }
 
     Write-Host "Git installation complete."
