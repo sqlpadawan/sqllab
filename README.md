@@ -102,7 +102,8 @@ wherever your ISOs actually live before running any scripts.
 | `12-New-LabCluster.ps1` | Creates a Windows Server Failover Cluster, configures file share witness and quorum |
 | `13-Enable-AlwaysOn.ps1` | Enables Always On Availability Groups on a SQL Server instance and opens port 5022 |
 | `14-Install-FailoverClusterTools.ps1` | Installs RSAT Failover Clustering PowerShell tools on sqlwork01 |
-| `Verify-Lab.ps1` | Post-deployment verification - confirms all VMs, SQL, and connectivity are healthy |
+| `Verify-Host.ps1` | Host verification - run on the Hyper-V host to confirm VM state and host network |
+| `Verify-Lab.ps1` | Lab verification - run on sqlwork01 to confirm domain, SQL, clustering, and Always On |
 | `Deploy-Lab.ps1` | Master orchestrator - calls all scripts in order |
 | `Remove-Lab.ps1` | Tears down all VMs and disks cleanly |
 
@@ -396,32 +397,21 @@ Expected duration: 10-15 minutes per cluster, plus ~2 minutes per SQL node for A
 
 ### Step 8 - Post-deployment verification
 
-From `sqlwork01`, open SSMS and connect to each SQL Server:
+Verification is split across two scripts depending on where you run them.
 
-| Connection string | Expected result |
-|---|---|
-| `sqlsrv01` | Connects to default instance |
-| `sqlsrv02` | Connects to default instance |
-| `sqlsrv03` | Connects to default instance |
-| `sqlsrv04` | Connects to default instance |
-
-From `sqllabdc01`, verify domain membership:
+**From the Hyper-V host** — confirms all VMs are running and the host network
+is configured correctly:
 
 ```powershell
-Get-ADComputer -Filter * | Select-Object Name, DNSHostName | Sort-Object Name
+.\Verify-Host.ps1
 ```
 
-Expected output:
+**From sqlwork01 as sqlpadawan** — confirms domain membership, SQL Server
+health, workstation software, failover cluster state, and Always On:
 
-```
-Name        DNSHostName
-----        -----------
-SQLLABDC01  sqllabdc01.sqllab.local
-SQLSRV01    sqlsrv01.sqllab.local
-SQLSRV02    sqlsrv02.sqllab.local
-SQLSRV03    sqlsrv03.sqllab.local
-SQLSRV04    sqlsrv04.sqllab.local
-SQLWORK01   sqlwork01.sqllab.local
+```powershell
+cd C:\Users\sqlpadawan\source\sqllab
+.\Verify-Lab.ps1
 ```
 
 ---
@@ -521,12 +511,27 @@ $vm     = (Get-Content .\roles.json | ConvertFrom-Json) | Where-Object Name -eq 
 
 ## Verifying the deployment
 
-Run the verification script from the host after deployment completes. This
-checks every layer of the lab in sequence — VM state, domain membership,
-network routing, SQL Server connectivity, workstation software, failover
-cluster health, and Always On status — and prints a pass/fail summary.
+Verification is split into two scripts — run both after a full deployment.
+
+**`Verify-Host.ps1`** runs on the Hyper-V host and checks:
+- All 6 VMs are in the Running state in Hyper-V
+- Host vNIC has the correct IP on the internal switch
+- DC-B subnet route is present
 
 ```powershell
+.\Verify-Host.ps1
+```
+
+**`Verify-Lab.ps1`** runs on `sqlwork01` as `sqlpadawan` and checks:
+- All VMs are joined to the domain
+- SQL Server is running and port 1433 is open on each SQL VM
+- Workstation software is installed (SSMS, VS Code, Visual Studio, Git)
+- Failover Clustering feature is installed on all cluster nodes
+- Both failover clusters are online with nodes Up and file share witness configured
+- Always On is enabled on all SQL cluster nodes
+
+```powershell
+cd C:\Users\sqlpadawan\source\sqllab
 .\Verify-Lab.ps1
 ```
 

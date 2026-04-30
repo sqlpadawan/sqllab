@@ -4,21 +4,14 @@ param(
     [string]$RolesPath  = ".\roles.json"
 )
 
+# This script must be run from sqlwork01 as a domain user (sqlpadawan).
+# Kerberos handles authentication to all lab VMs - no vault or explicit
+# credentials are needed.
+
 Set-Location $PSScriptRoot
 
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 $roles  = Get-Content $RolesPath  | ConvertFrom-Json
-
-# Build domain credentials only when the vault is available (Hyper-V host).
-# When running from sqlwork01 the machine is domain-joined and Kerberos handles
-# auth automatically - no vault or explicit credentials needed.
-$isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
-$domainCred = $null
-if (-not $isDomainJoined) {
-    $domainCred = New-Object PSCredential(
-        "$($config.DomainNetBIOS)\Administrator",
-        (Get-Secret -Name 'DomainAdminPass' -Vault $config.SecretsVault))
-}
 
 $pass  = 0
 $fail  = 0
@@ -29,79 +22,18 @@ function Write-Fail  { param($msg) Write-Host "  [FAIL] $msg" -ForegroundColor R
 function Write-Warn  { param($msg) Write-Host "  [WARN] $msg" -ForegroundColor Yellow; $script:warns++ }
 function Write-Check { param($msg) Write-Host "`n$msg" -ForegroundColor Cyan }
 
-Write-Host "`n=== sqllab.local Verification ===" -ForegroundColor Cyan
+Write-Host "`n=== sqllab.local Lab Verification ===" -ForegroundColor Cyan
 Write-Host "Domain : $($config.DomainFQDN)"
-Write-Host "VMs    : $($roles.Count)`n"
+Write-Host "VMs    : $($roles.Count)"
+Write-Host "Run    : sqlwork01 (domain-joined)`n"
 
 # ---------------------------------------------------------------------------
-# 1. Hyper-V VM state
+# 1. Domain membership
 # ---------------------------------------------------------------------------
-Write-Check "[1/6] VM state..."
-foreach ($vm in $roles) {
-    $hvVM = Get-VM -Name $vm.Name -ErrorAction SilentlyContinue
-    if (-not $hvVM) {
-        Write-Fail "$($vm.Name) - VM not found in Hyper-V"
-    } elseif ($hvVM.State -ne 'Running') {
-        Write-Fail "$($vm.Name) - VM state is '$($hvVM.State)' (expected Running)"
-    } else {
-        Write-Pass "$($vm.Name) - Running"
-    }
-}
-
-# ---------------------------------------------------------------------------
-# 2. Host network
-# ---------------------------------------------------------------------------
-Write-Check "[2/9] Host network..."
-
-if (-not $isDomainJoined) {
-    $internalNIC = Get-NetIPAddress -InterfaceAlias "*$($config.vSwitchInternal)*" `
-        -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -eq $config.HostInternalIP }
-    if ($internalNIC) {
-        Write-Pass "Host vNIC has $($config.HostInternalIP)/24 on $($config.vSwitchInternal)"
-    } else {
-        Write-Fail "Host vNIC missing $($config.HostInternalIP)/24 - run 00-Setup-LabFolders.ps1"
-    }
-
-    $dcbRoute = Get-NetRoute -DestinationPrefix '192.168.10.0/24' -ErrorAction SilentlyContinue |
-        Where-Object { $_.NextHop -eq '172.16.10.10' }
-    if ($dcbRoute) {
-        Write-Pass "DC-B route present: 192.168.10.0/24 via 172.16.10.10"
-    } else {
-        Write-Warn "DC-B route missing - DC-B VMs may be unreachable from host"
-    }
-} else {
-    Write-Host "  Skipping host network checks - not applicable when running from sqlwork01." -ForegroundColor Gray
-}
-
-# ---------------------------------------------------------------------------
-# 3. WinRM reachability
-# ---------------------------------------------------------------------------
-Write-Check "[3/9] WinRM connectivity..."
-foreach ($vm in $roles | Where-Object { $_.Role -ne 'DC' }) {
-    if (Test-WSMan -ComputerName $vm.IP -ErrorAction SilentlyContinue) {
-        Write-Pass "$($vm.Name) ($($vm.IP)) - WinRM reachable"
-    } else {
-        Write-Fail "$($vm.Name) ($($vm.IP)) - WinRM not responding"
-    }
-}
-$dcIP = ($roles | Where-Object Role -eq 'DC').IP
-if (Test-NetConnection -ComputerName $dcIP -Port 5985 `
-        -InformationLevel Quiet -WarningAction SilentlyContinue) {
-    Write-Pass "sqllabdc01 ($dcIP) - WinRM reachable"
-} else {
-    Write-Fail "sqllabdc01 ($dcIP) - WinRM not responding"
-}
-
-# ---------------------------------------------------------------------------
-# 4. Domain membership
-# ---------------------------------------------------------------------------
-Write-Check "[4/9] Domain membership..."
+Write-Check "[1/6] Domain membership..."
 try {
     $dc = $roles | Where-Object Role -eq 'DC'
-    $dcTarget = if ($isDomainJoined) { $dc.Name } else { $dc.IP }
-    $invokeParams = if ($isDomainJoined) { @{ ComputerName = $dcTarget } } else { @{ ComputerName = $dcTarget; Credential = $domainCred } }
-    $computers = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
+    $computers = Invoke-Command -ComputerName $dc.Name -ErrorAction Stop -ScriptBlock {
         Get-ADComputer -Filter * | Select-Object -ExpandProperty Name
     }
     $expectedNames = $roles.Name | ForEach-Object { $_.ToUpper() }
@@ -117,20 +49,19 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# 5. SQL Server connectivity
+# 2. SQL Server connectivity
 # ---------------------------------------------------------------------------
-Write-Check "[5/9] SQL Server connectivity..."
+Write-Check "[2/6] SQL Server connectivity..."
 $sqlVMs = $roles | Where-Object { $_.Role -eq 'SQL' }
 foreach ($vm in $sqlVMs) {
     try {
-        $invokeParams = if ($isDomainJoined) { @{ ComputerName = $vm.Name } } else { @{ ComputerName = $vm.IP; Credential = $domainCred } }
-        $result = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
+        $result = Invoke-Command -ComputerName $vm.Name -ErrorAction Stop -ScriptBlock {
             $svc = Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue
-            if (-not $svc) { return "Service not found" }
+            if (-not $svc)                 { return "Service not found" }
             if ($svc.Status -ne 'Running') { return "Service is $($svc.Status)" }
             $tcp = Test-NetConnection -ComputerName localhost -Port 1433 `
                 -InformationLevel Quiet -WarningAction SilentlyContinue
-            if (-not $tcp) { return "Port 1433 not listening" }
+            if (-not $tcp)                 { return "Port 1433 not listening" }
             return "OK"
         }
         if ($result -eq "OK") {
@@ -143,94 +74,70 @@ foreach ($vm in $sqlVMs) {
     }
 }
 
-# Test SQL connectivity from sqlwork01 to each SQL server.
-# When already on sqlwork01, test locally instead of remoting to ourselves.
-Write-Host "  Checking SQL connectivity from sqlwork01..."
-$workstation = $roles | Where-Object Name -eq 'sqlwork01'
+# Test TCP connectivity from this machine to each SQL server on port 1433.
+# Validates that firewall rules and routing allow SQL connections from sqlwork01.
+Write-Host "  Checking SQL port reachability from sqlwork01..."
 foreach ($vm in $sqlVMs) {
-    try {
-        if ($isDomainJoined) {
-            $result = Test-NetConnection -ComputerName $vm.IP -Port 1433 `
-                -InformationLevel Quiet -WarningAction SilentlyContinue
-        } else {
-            $result = Invoke-Command -ComputerName $workstation.IP -Credential $domainCred `
-                -ErrorAction Stop -ScriptBlock {
-                param($SQLHost)
-                Test-NetConnection -ComputerName $SQLHost -Port 1433 `
-                    -InformationLevel Quiet -WarningAction SilentlyContinue
-            } -ArgumentList $vm.IP
-        }
-        if ($result) {
-            Write-Pass "sqlwork01 -> $($vm.Name):1433 - reachable"
-        } else {
-            Write-Fail "sqlwork01 -> $($vm.Name):1433 - not reachable"
-        }
-    } catch {
-        Write-Fail "sqlwork01 -> $($vm.Name) - could not test: $_"
+    $tcp = Test-NetConnection -ComputerName $vm.IP -Port 1433 `
+        -InformationLevel Quiet -WarningAction SilentlyContinue
+    if ($tcp) {
+        Write-Pass "sqlwork01 -> $($vm.Name):1433 - reachable"
+    } else {
+        Write-Fail "sqlwork01 -> $($vm.Name):1433 - not reachable"
     }
 }
 
 # ---------------------------------------------------------------------------
-# 6. Workstation software
+# 3. Workstation software
 # ---------------------------------------------------------------------------
-Write-Check "[6/9] Workstation software..."
-$workstation = $roles | Where-Object Name -eq 'sqlwork01'
-try {
-    $invokeParams = if ($isDomainJoined) { @{ ComputerName = $workstation.Name } } else { @{ ComputerName = $workstation.IP; Credential = $domainCred } }
-    Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
+Write-Check "[3/6] Workstation software..."
 
-        $checks = @{
-            "SSMS"          = @(
-                "C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SSMS.exe",
-                "C:\Program Files\Microsoft SQL Server Management Studio 22\Common7\IDE\Ssms.exe",
-                "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\Ssms.exe",
-                "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Ssms.exe"
-            )
-            "VS Code"       = @("C:\Program Files\Microsoft VS Code\Code.exe")
-            "Visual Studio" = @(
-                "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\devenv.exe",
-                "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\IDE\devenv.exe",
-                "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
-            )
-            "Git"           = @("C:\Program Files\Git\cmd\git.exe")
-        }
+$checks = @{
+    "SSMS"          = @(
+        "C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SSMS.exe",
+        "C:\Program Files\Microsoft SQL Server Management Studio 22\Common7\IDE\Ssms.exe",
+        "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\Ssms.exe",
+        "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Ssms.exe"
+    )
+    "VS Code"       = @("C:\Program Files\Microsoft VS Code\Code.exe")
+    "Visual Studio" = @(
+        "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\devenv.exe",
+        "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\IDE\devenv.exe",
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe"
+    )
+    "Git"           = @("C:\Program Files\Git\cmd\git.exe")
+}
 
-        foreach ($app in $checks.Keys) {
-            $found = $false
-            foreach ($path in $checks[$app]) {
-                if (Test-Path $path) { $found = $true; break }
-            }
-            # Registry fallback for Visual Studio - VS registers in the WOW6432Node hive
-            if (-not $found -and $app -eq 'Visual Studio') {
-                $vsReg = Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' `
-                    -ErrorAction SilentlyContinue |
-                    Get-ItemProperty -ErrorAction SilentlyContinue |
-                    Where-Object { $_.DisplayName -like 'Visual Studio*Community*' }
-                if ($vsReg) { $found = $true }
-            }
-            if ($found) {
-                Write-Host "  [PASS] $app - installed" -ForegroundColor Green
-            } else {
-                Write-Host "  [WARN] $app - not found at expected path" -ForegroundColor Yellow
-            }
-        }
+foreach ($app in $checks.Keys) {
+    $found = $false
+    foreach ($path in $checks[$app]) {
+        if (Test-Path $path) { $found = $true; break }
     }
-} catch {
-    Write-Fail "Could not connect to sqlwork01 to check software: $_"
+    # Registry fallback for Visual Studio - VS registers in the WOW6432Node hive
+    if (-not $found -and $app -eq 'Visual Studio') {
+        $vsReg = Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' `
+            -ErrorAction SilentlyContinue |
+            Get-ItemProperty -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Visual Studio*Community*' }
+        if ($vsReg) { $found = $true }
+    }
+    if ($found) {
+        Write-Pass "$app - installed"
+    } else {
+        Write-Warn "$app - not found at expected path"
+    }
 }
 
 # ---------------------------------------------------------------------------
-# 7. Failover Clustering feature
+# 4. Failover Clustering feature
 # ---------------------------------------------------------------------------
 $clusterVMs = $roles | Where-Object { $_.Clustering -eq $true }
 if ($clusterVMs) {
-    Write-Check "[7/9] Failover Clustering feature..."
+    Write-Check "[4/6] Failover Clustering feature..."
     foreach ($vm in $clusterVMs) {
         try {
-            $invokeParams = if ($isDomainJoined) { @{ ComputerName = $vm.Name } } else { @{ ComputerName = $vm.IP; Credential = $domainCred } }
-            $result = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
+            $result = Invoke-Command -ComputerName $vm.Name -ErrorAction Stop -ScriptBlock {
                 $f = Get-WindowsFeature Failover-Clustering
-                # InstallState is an enum - return as string for reliable comparison
                 return $f.InstallState.ToString()
             }
             if ($result -eq 'Installed') {
@@ -243,104 +150,72 @@ if ($clusterVMs) {
         }
     }
 } else {
-    Write-Check "[7/9] Failover Clustering feature..."
+    Write-Check "[4/6] Failover Clustering feature..."
     Write-Host "  No VMs configured with Clustering:true - skipping." -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------
-# 8. Failover cluster health
+# 5. Failover cluster health
 # ---------------------------------------------------------------------------
 if ($config.Clusters) {
-    Write-Check "[8/9] Failover cluster health..."
+    Write-Check "[5/6] Failover cluster health..."
 
-    # FailoverClusters cmdlets do not work over a double-hop PSRemoting session.
-    # When running from a domain-joined machine (sqlwork01) run checks locally.
-    # When running from the Hyper-V host, remote into sqlwork01 in a single hop.
-    $isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
-
-    $clusterCheckBlock = {
-        param($ClusterName)
-        if (-not (Get-Module -ListAvailable FailoverClusters)) {
-            return [PSCustomObject]@{ Found = $false; Reason = 'FailoverClusters module not found' }
-        }
+    if (-not (Get-Module -ListAvailable FailoverClusters)) {
+        Write-Fail "FailoverClusters module not found - run 14-Install-FailoverClusterTools.ps1"
+    } else {
         Import-Module FailoverClusters -ErrorAction SilentlyContinue
-        $cluster = Get-Cluster -Name $ClusterName -ErrorAction SilentlyContinue
-        if (-not $cluster) {
-            return [PSCustomObject]@{ Found = $false; Reason = "Cluster '$ClusterName' not found" }
-        }
-        $grp    = Get-ClusterGroup  -Cluster $ClusterName -Name 'Cluster Group' -ErrorAction SilentlyContinue
-        $nodes  = Get-ClusterNode   -Cluster $ClusterName | Select-Object Name, @{ N='State'; E={ $_.State.ToString() } }
-        $quorum = Get-ClusterQuorum -Cluster $ClusterName
-        return [PSCustomObject]@{
-            Found        = $true
-            ClusterState = $grp.State.ToString()
-            Nodes        = $nodes
-            QuorumType   = $quorum.QuorumType.ToString()
-        }
-    }
 
-    foreach ($clusterDef in $config.Clusters) {
-        try {
-            if ($isDomainJoined) {
-                # Running on sqlwork01 - invoke locally, no remoting needed.
-                $clusterResult = & $clusterCheckBlock $clusterDef.Name
-            } else {
-                # Running on the Hyper-V host - single hop to sqlwork01.
-                $workstation = $roles | Where-Object { $_.Name -eq 'sqlwork01' }
-                $clusterResult = Invoke-Command -ComputerName $workstation.IP `
-                    -Credential $domainCred -ErrorAction Stop `
-                    -ScriptBlock $clusterCheckBlock -ArgumentList $clusterDef.Name
-            }
-
-            if (-not $clusterResult.Found) {
-                Write-Fail "$($clusterDef.Name) - $($clusterResult.Reason)"
-                continue
-            }
-
-            if ($clusterResult.ClusterState -eq 'Online') {
-                Write-Pass "$($clusterDef.Name) - cluster online"
-            } else {
-                Write-Fail "$($clusterDef.Name) - cluster state is '$($clusterResult.ClusterState)'"
-            }
-
-            foreach ($node in $clusterResult.Nodes) {
-                if ($node.State -eq 'Up') {
-                    Write-Pass "$($clusterDef.Name) - node $($node.Name) is Up"
-                } else {
-                    Write-Fail "$($clusterDef.Name) - node $($node.Name) state is '$($node.State)'"
+        foreach ($clusterDef in $config.Clusters) {
+            try {
+                $cluster = Get-Cluster -Name $clusterDef.Name -ErrorAction SilentlyContinue
+                if (-not $cluster) {
+                    Write-Fail "$($clusterDef.Name) - cluster not found"
+                    continue
                 }
-            }
 
-            if ($clusterResult.QuorumType -like '*FileShare*') {
-                Write-Pass "$($clusterDef.Name) - file share witness configured"
-            } else {
-                Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($clusterResult.QuorumType)"
-            }
+                $grp    = Get-ClusterGroup  -Cluster $clusterDef.Name -Name 'Cluster Group' -ErrorAction SilentlyContinue
+                $nodes  = Get-ClusterNode   -Cluster $clusterDef.Name
+                $quorum = Get-ClusterQuorum -Cluster $clusterDef.Name
 
-        } catch {
-            Write-Fail "$($clusterDef.Name) - could not query cluster: $_"
+                if ($grp.State -eq 'Online') {
+                    Write-Pass "$($clusterDef.Name) - cluster online"
+                } else {
+                    Write-Fail "$($clusterDef.Name) - cluster state is '$($grp.State)'"
+                }
+
+                foreach ($node in $nodes) {
+                    if ($node.State -eq 'Up') {
+                        Write-Pass "$($clusterDef.Name) - node $($node.Name) is Up"
+                    } else {
+                        Write-Fail "$($clusterDef.Name) - node $($node.Name) state is '$($node.State)'"
+                    }
+                }
+
+                if ($quorum.QuorumType -like '*FileShare*') {
+                    Write-Pass "$($clusterDef.Name) - file share witness configured"
+                } else {
+                    Write-Warn "$($clusterDef.Name) - unexpected quorum type: $($quorum.QuorumType)"
+                }
+
+            } catch {
+                Write-Fail "$($clusterDef.Name) - could not query cluster: $_"
+            }
         }
     }
 } else {
-    Write-Check "[8/9] Failover cluster health..."
+    Write-Check "[5/6] Failover cluster health..."
     Write-Host "  No clusters defined in config.json - skipping." -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------
-# 9. Always On enabled
+# 6. Always On enabled
 # ---------------------------------------------------------------------------
 $alwaysOnVMs = $roles | Where-Object { $_.Clustering -eq $true -and $_.Role -eq 'SQL' }
 if ($alwaysOnVMs) {
-    Write-Check "[9/9] Always On Availability Groups..."
-    $isDomainJoined = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+    Write-Check "[6/6] Always On Availability Groups..."
     foreach ($vm in $alwaysOnVMs) {
         try {
-            $invokeParams = if ($isDomainJoined) {
-                @{ ComputerName = $vm.Name }
-            } else {
-                @{ ComputerName = $vm.IP; Credential = $domainCred }
-            }
-            $enabled = Invoke-Command @invokeParams -ErrorAction Stop -ScriptBlock {
+            $enabled = Invoke-Command -ComputerName $vm.Name -ErrorAction Stop -ScriptBlock {
                 if (-not (Get-Module -ListAvailable SqlServer)) { return $null }
                 Import-Module SqlServer -ErrorAction Stop
                 $inst = Get-Item 'SQLSERVER:\SQL\localhost\DEFAULT' -ErrorAction Stop
@@ -358,20 +233,20 @@ if ($alwaysOnVMs) {
         }
     }
 } else {
-    Write-Check "[9/9] Always On Availability Groups..."
+    Write-Check "[6/6] Always On Availability Groups..."
     Write-Host "  No SQL VMs with Clustering:true found - skipping." -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-Write-Host "`n=== Verification Summary ===" -ForegroundColor Cyan
+Write-Host "`n=== Lab Verification Summary ===" -ForegroundColor Cyan
 Write-Host "  Passed  : $pass" -ForegroundColor Green
 if ($warns -gt 0) { Write-Host "  Warnings: $warns" -ForegroundColor Yellow }
 if ($fail  -gt 0) { Write-Host "  Failed  : $fail"  -ForegroundColor Red    }
 
 if ($fail -eq 0 -and $warns -eq 0) {
-    Write-Host "`nAll checks passed. Lab is healthy." -ForegroundColor Green
+    Write-Host "`nAll lab checks passed. Lab is healthy." -ForegroundColor Green
 } elseif ($fail -eq 0) {
     Write-Host "`nLab is functional with $warns warning(s). Review items above." -ForegroundColor Yellow
 } else {
