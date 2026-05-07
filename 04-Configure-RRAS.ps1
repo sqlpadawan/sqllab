@@ -15,13 +15,6 @@ $cred = New-Object PSCredential(
 
 Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
 
-    Write-Host "Installing RRAS and Routing..."
-    Install-WindowsFeature RemoteAccess, Routing, RSAT-RemoteAccess-PowerShell `
-        -IncludeManagementTools
-
-    Write-Host "Starting RRAS service..."
-    Install-RemoteAccess -VpnType RoutingOnly
-
     Write-Host "Identifying NICs by IP address..."
     # Find internal NIC - the one with the 172.16.x.x lab IP
     $int = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } |
@@ -40,24 +33,25 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
 
     Write-Host "External NIC: $($ext.Name)  Internal NIC: $($int.Name)"
 
-    Write-Host "Configuring NAT..."
-    netsh routing ip nat install
-    netsh routing ip nat add interface name="$($ext.Name)" mode=full
-    netsh routing ip nat add interface name="$($int.Name)" mode=private
+    # Suppress the external NIC from registering in AD DNS. Without this,
+    # the DC's home-network DHCP IP gets added as an A record in sqllab.local,
+    # which pollutes DNS and can cause Kerberos issues.
+    Write-Host "Suppressing external NIC DNS registration..."
+    Set-DnsClient -InterfaceAlias $ext.Name -RegisterThisConnectionsAddress $false
 
-    Write-Host "Enabling IP forwarding..."
+    # Enable OS-level IP routing. This registry key is required for Windows to
+    # forward packets between interfaces. New-NetNat and interface-level
+    # forwarding alone are not sufficient without this set to 1.
+    Write-Host "Enabling OS-level IP routing..."
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+        -Name IPEnableRouter -Value 1 -Type DWord
+
+    Write-Host "Enabling IP forwarding on both NICs..."
     Set-NetIPInterface -InterfaceAlias $ext.Name -Forwarding Enabled
     Set-NetIPInterface -InterfaceAlias $int.Name -Forwarding Enabled
 
-    Write-Host "Adding static routes for lab subnets..."
-    New-NetRoute -DestinationPrefix "172.16.10.0/24" `
-        -InterfaceAlias $int.Name -RouteMetric 10 -ErrorAction SilentlyContinue
-    New-NetRoute -DestinationPrefix "192.168.10.0/24" `
-        -InterfaceAlias $int.Name -RouteMetric 10 -ErrorAction SilentlyContinue
-
     # Add 192.168.10.1 to the internal NIC so DC-B VMs (192.168.10.x) have a
-    # reachable gateway on their own subnet. Without this they cannot route
-    # through the DC even though RRAS is running.
+    # reachable gateway on their own subnet.
     $existing = Get-NetIPAddress -InterfaceAlias $int.Name -AddressFamily IPv4 `
         -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq '192.168.10.1' }
     if (-not $existing) {
@@ -67,7 +61,24 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
         Write-Host "Added 192.168.10.1/24 to $($int.Name) for DC-B routing."
     }
 
-    Write-Host "RRAS configuration complete."
+    # Configure NAT using New-NetNat (the correct approach for Server 2025).
+    # The legacy netsh routing ip nat commands and Install-RemoteAccess
+    # -VpnType RoutingOnly both conflict with New-NetNat and must not be used.
+    Write-Host "Configuring NAT for DC-A subnet (172.16.10.0/24)..."
+    if (-not (Get-NetNat -Name "LabNAT" -ErrorAction SilentlyContinue)) {
+        New-NetNat -Name "LabNAT" -InternalIPInterfaceAddressPrefix "172.16.10.0/24"
+        Write-Host "Created LabNAT."
+    } else {
+        Write-Host "LabNAT already exists - skipping."
+    }
+
+    Write-Host "Configuring NAT for DC-B subnet (192.168.10.0/24)..."
+    if (-not (Get-NetNat -Name "LabNAT-DCB" -ErrorAction SilentlyContinue)) {
+        New-NetNat -Name "LabNAT-DCB" -InternalIPInterfaceAddressPrefix "192.168.10.0/24"
+        Write-Host "Created LabNAT-DCB."
+    } else {
+        Write-Host "LabNAT-DCB already exists - skipping."
+    }
 
     # Ensure the external NIC has a DHCP address. Removing IPs from it
     # can cause it to fall back to link-local, breaking internet access.
@@ -83,5 +94,12 @@ Invoke-Command -ComputerName $VMDef.IP -Credential $cred -ScriptBlock {
         Start-Sleep -Seconds 5
         Write-Host "DHCP renewed on $($ext.Name)."
     }
+
+    Write-Host "Verifying NAT and routing configuration..."
+    Get-NetNat | Select-Object Name, InternalIPInterfaceAddressPrefix, Active | Format-Table -AutoSize
+    Get-NetIPInterface | Where-Object { $_.Forwarding -eq 'Enabled' } |
+        Select-Object InterfaceAlias, Forwarding | Format-Table -AutoSize
+
+    Write-Host "RRAS configuration complete."
 
 }
